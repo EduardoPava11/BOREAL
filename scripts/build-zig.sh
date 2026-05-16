@@ -48,14 +48,26 @@ esac
 
 # ----------------------------------------------------------------------------
 # Map Xcode CONFIGURATION → Zig optimize mode.
+#
+# IMPORTANT: For iOS targets we ALWAYS use ReleaseFast, regardless of
+# Xcode's Debug/Release setting. Reason: Zig's Debug mode pulls in stack-
+# trace + panic-handling machinery that references `_dyld_get_image_header_
+# containing_address` (via `_debug.SelfInfo.MachO.findModule`), which is
+# unresolved at iOS link time without linking libdyld explicitly. ReleaseFast
+# strips that machinery; the resulting .a links cleanly. We don't lose much
+# debugging value for the kernel itself — its tests run via `zig build test`
+# on the host, which still uses Debug mode.
 # ----------------------------------------------------------------------------
 
-case "${CONFIGURATION:-Debug}" in
-    Release)
+case "${PLATFORM_NAME:-}" in
+    iphoneos|iphonesimulator)
         ZIG_OPT="ReleaseFast"
         ;;
     *)
-        ZIG_OPT="Debug"
+        case "${CONFIGURATION:-Debug}" in
+            Release) ZIG_OPT="ReleaseFast" ;;
+            *)       ZIG_OPT="Debug" ;;
+        esac
         ;;
 esac
 

@@ -34,17 +34,56 @@ typedef enum {
     BK_UNSUPPORTED_COMPRESSION_LOSSY_DNG     = 15,  /* Compression == 34892 */
     BK_UNSUPPORTED_COMPRESSION_APPLE_VC8R    = 16,  /* Compression == 'vc8r' */
     BK_LJPEG_DECODE_FAILED                   = 17,  /* Compression == 7 but ljpeg.decode rejected */
+    BK_NULL_POINTER                          = 18,
 } bk_status_t;
 
-// Bin one DNG into a 64*64*4 = 16384 byte RGBA8 buffer.
-// Caller owns dng_bytes and out_rgba.
-// out_rgba must have at least 16384 bytes available.
-// Returns BK_OK (= 0) on success.
+/* CFA pattern enum — which channel sits at each 2×2 unit-cell position. */
+typedef enum {
+    BK_CFA_RGGB = 0,    /* R G / G B */
+    BK_CFA_BGGR = 1,    /* B G / G R  ← iPhone 17 Pro main wide */
+} bk_cfa_pattern_t;
+
+/* The C ABI mirror of dng.Mosaic. Caller owns the struct (declared on its
+ * own stack); on success, `samples` is a libc-malloc'd buffer that the
+ * caller MUST free via bk_free_mosaic. On failure, `samples` is null and
+ * bk_free_mosaic is a safe no-op. */
+typedef struct {
+    uint32_t          width;
+    uint32_t          height;
+    uint32_t          bits_per_sample;
+    uint32_t          black_level;
+    uint32_t          white_level;
+    bk_cfa_pattern_t  cfa;
+    uint32_t          crop_origin_x;
+    uint32_t          crop_origin_y;
+    uint32_t          crop_size_w;
+    uint32_t          crop_size_h;
+    uint16_t         *samples;     /* heap, length = width * height */
+} bk_mosaic_t;
+
+/* Bin one DNG into a 64*64*4 = 16384 byte RGBA8 buffer.
+ * Caller owns dng_bytes and out_rgba.
+ * out_rgba must have at least 16384 bytes available.
+ * Returns BK_OK (= 0) on success. */
 int bk_bin_dng_to_rgba64(
     const uint8_t *dng_bytes,
     size_t         dng_len,
     uint8_t       *out_rgba
 );
+
+/* Decode a DNG (uncompressed Bayer or LJPEG SOF3) to a u16 mosaic.
+ * On success, out_mosaic->samples is a libc-malloc'd buffer of
+ * width*height u16 samples that the caller MUST free via bk_free_mosaic.
+ * Returns BK_OK on success, non-zero bk_status_t on failure. */
+int bk_decode_dng_to_mosaic(
+    const uint8_t  *dng_bytes,
+    size_t          dng_len,
+    bk_mosaic_t    *out_mosaic
+);
+
+/* Free a mosaic returned by bk_decode_dng_to_mosaic. Safe to call on a
+ * mosaic with samples == null (e.g., after a failed decode). */
+void bk_free_mosaic(bk_mosaic_t *mosaic);
 
 #ifdef __cplusplus
 }

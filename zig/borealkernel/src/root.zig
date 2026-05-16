@@ -35,6 +35,31 @@ pub const Status = enum(c_int) {
     unsupported_compression_lossy_dng = 15,
     unsupported_compression_apple_vc8r= 16,
     ljpeg_decode_failed               = 17,
+    null_pointer                      = 18,
+};
+
+/// CFA pattern — matches `bk_cfa_pattern_t` in BorealKernel.h.
+pub const CfaPattern = enum(c_int) {
+    rggb = 0,
+    bggr = 1,
+};
+
+/// `bk_mosaic_t` — the C ABI mirror of dng.Mosaic. Caller owns the struct
+/// (declared on its stack); on success, `samples` is a libc-malloc'd buffer
+/// that the caller MUST free via `bk_free_mosaic`. On failure, `samples`
+/// is left as null and `bk_free_mosaic` is safe to call (no-op).
+pub const Mosaic = extern struct {
+    width:           u32,
+    height:          u32,
+    bits_per_sample: u32,
+    black_level:     u32,
+    white_level:     u32,
+    cfa:             CfaPattern,
+    crop_origin_x:   u32,
+    crop_origin_y:   u32,
+    crop_size_w:     u32,
+    crop_size_h:     u32,
+    samples:         ?[*]u16,   // heap, length = width * height
 };
 
 /// Single entry point. Parses `dng_bytes`, bins the cropped 2944×2944 RGGB
@@ -93,6 +118,62 @@ fn statusFromBayerError(err: bayer.Error) c_int {
         bayer.Error.BadOutputBuffer => Status.bad_output_buffer,
         bayer.Error.BadCropOrigin   => Status.bad_crop_origin,
     });
+}
+
+/// Decode a DNG (uncompressed Bayer or LJPEG SOF3) to a u16 mosaic. On
+/// success, `out_mosaic.samples` is a libc-malloc'd buffer of
+/// `width * height` u16 samples that the caller MUST free via
+/// `bk_free_mosaic`.
+///
+/// On failure, returns a non-zero `bk_status_t` and `out_mosaic.samples`
+/// is set to null (so `bk_free_mosaic` is safe to call regardless).
+export fn bk_decode_dng_to_mosaic(
+    dng_bytes: [*]const u8,
+    dng_len:   usize,
+    out_mosaic: *Mosaic,
+) c_int {
+    out_mosaic.samples = null;
+
+    const bytes = dng_bytes[0..dng_len];
+
+    // dng.parse uses `c_allocator` so the returned `backing` slice is
+    // libc-malloc'd. We can hand its base pointer + length to the caller
+    // and free it with `c_allocator.free` later.
+    const m = dng.parse(std.heap.c_allocator, bytes) catch |err| {
+        return statusFromDngError(err);
+    };
+
+    out_mosaic.* = .{
+        .width           = m.width,
+        .height          = m.height,
+        .bits_per_sample = m.bits,
+        .black_level     = m.black,
+        .white_level     = m.white,
+        .cfa             = switch (m.cfa) {
+            .rggb => .rggb,
+            .bggr => .bggr,
+        },
+        .crop_origin_x   = m.crop_x,
+        .crop_origin_y   = m.crop_y,
+        .crop_size_w     = m.crop_w,
+        .crop_size_h     = m.crop_h,
+        .samples         = m.backing.ptr,
+    };
+    // Don't `dng.deinit(&m)` — we transferred ownership of `backing` to the
+    // caller via `out_mosaic.samples`. The wrapper Mosaic struct is on the
+    // stack and goes away with the function return.
+    return @intFromEnum(Status.ok);
+}
+
+/// Free a mosaic returned by `bk_decode_dng_to_mosaic`. Safe to call on a
+/// mosaic with `samples == null` (e.g., after a failed decode).
+export fn bk_free_mosaic(mosaic: *Mosaic) void {
+    if (mosaic.samples) |ptr| {
+        const len = @as(usize, mosaic.width) * @as(usize, mosaic.height);
+        const slice = ptr[0..len];
+        std.heap.c_allocator.free(slice);
+        mosaic.samples = null;
+    }
 }
 
 test "root: status enum stays in sync with bridging header values" {
