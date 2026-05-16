@@ -22,7 +22,21 @@ pub const Error = error{
     MissingTag,
     BadDimensions,
     ShortRead,
-    LJPEGDecodeFailed,              // upstream LJPEG decoder rejected the strip
+    LJPEGDecodeFailed,              // upstream LJPEG decoder rejected (generic fallback)
+    // Per-variant LJPEG decoder errors. Mapped 1:1 from ljpeg.Error so the
+    // C ABI status code (and downstream Swift breadcrumb) names exactly which
+    // LJPEG decoder check failed on a real iPhone DNG tile. Without these,
+    // every LJPEG failure collapses into LJPEGDecodeFailed=17, which wastes
+    // a round trip when diagnosing.
+    LJPEGBadMagic,
+    LJPEGUnexpectedEnd,
+    LJPEGUnsupportedMarker,
+    LJPEGUnsupportedComponentCount,
+    LJPEGUnsupportedPrecision,
+    LJPEGUnsupportedPredictor,
+    LJPEGHasRestartMarkers,
+    LJPEGMalformedHuffmanTable,
+    LJPEGInvalidHuffmanCode,
     OutOfMemory,
 };
 
@@ -255,7 +269,7 @@ fn parseIfd0(
             const tile_bytes = bytes[off..@as(usize, off) + @as(usize, cnt)];
 
             // Decode this tile's LJPEG payload.
-            var dec = ljpeg.decode(allocator, tile_bytes) catch return Error.LJPEGDecodeFailed;
+            var dec = ljpeg.decode(allocator, tile_bytes) catch |err| return mapLJPEGError(err);
             defer dec.deinit(allocator);
 
             // Copy decoded tile samples into the right rectangle of `pixels`.
@@ -294,7 +308,7 @@ fn parseIfd0(
                     decodeMosaicU16(strip[0..single_strip_byte_count], pixels, order);
                 },
                 7 => {
-                    var dec = ljpeg.decode(allocator, strip) catch return Error.LJPEGDecodeFailed;
+                    var dec = ljpeg.decode(allocator, strip) catch |err| return mapLJPEGError(err);
                     if (dec.width != w or dec.height != h) {
                         dec.deinit(allocator);
                         return Error.BadDimensions;
@@ -351,6 +365,25 @@ pub fn deinit(allocator: std.mem.Allocator, m: *Mosaic) void {
     allocator.free(m.backing);
     m.samples = &.{};
     m.backing = &.{};
+}
+
+/// Map an `ljpeg.Error` to the corresponding per-variant `dng.Error` so the
+/// C ABI status code names which LJPEG decoder check failed. Without this
+/// mapping, every LJPEG failure collapses to `LJPEGDecodeFailed=17` and
+/// requires source spelunking to diagnose.
+fn mapLJPEGError(err: ljpeg.Error) Error {
+    return switch (err) {
+        ljpeg.Error.BadMagic                  => Error.LJPEGBadMagic,
+        ljpeg.Error.UnexpectedEnd             => Error.LJPEGUnexpectedEnd,
+        ljpeg.Error.UnsupportedMarker         => Error.LJPEGUnsupportedMarker,
+        ljpeg.Error.UnsupportedComponentCount => Error.LJPEGUnsupportedComponentCount,
+        ljpeg.Error.UnsupportedPrecision      => Error.LJPEGUnsupportedPrecision,
+        ljpeg.Error.UnsupportedPredictor      => Error.LJPEGUnsupportedPredictor,
+        ljpeg.Error.HasRestartMarkers         => Error.LJPEGHasRestartMarkers,
+        ljpeg.Error.MalformedHuffmanTable     => Error.LJPEGMalformedHuffmanTable,
+        ljpeg.Error.InvalidHuffmanCode        => Error.LJPEGInvalidHuffmanCode,
+        ljpeg.Error.OutOfMemory               => Error.OutOfMemory,
+    };
 }
 
 // --- Internals ---

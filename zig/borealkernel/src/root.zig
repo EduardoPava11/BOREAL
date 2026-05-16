@@ -37,6 +37,18 @@ pub const Status = enum(c_int) {
     unsupported_compression_apple_vc8r= 16,
     ljpeg_decode_failed               = 17,
     null_pointer                      = 18,
+    // Per-variant LJPEG decoder errors (mapped from ljpeg.Error). When one
+    // of these surfaces, the device-side log names the exact LJPEG check
+    // that rejected the iPhone DNG tile — no source spelunking required.
+    ljpeg_bad_magic                   = 19,
+    ljpeg_unexpected_end              = 20,
+    ljpeg_unsupported_marker          = 21,
+    ljpeg_unsupported_component_count = 22,
+    ljpeg_unsupported_precision       = 23,
+    ljpeg_unsupported_predictor       = 24,
+    ljpeg_has_restart_markers         = 25,
+    ljpeg_malformed_huffman_table     = 26,
+    ljpeg_invalid_huffman_code        = 27,
 };
 
 /// CFA pattern — matches `bk_cfa_pattern_t` in BorealKernel.h.
@@ -97,19 +109,28 @@ export fn bk_bin_dng_to_rgba64(
 
 fn statusFromDngError(err: dng.Error) c_int {
     return @intFromEnum(switch (err) {
-        dng.Error.BadTiffMagic                    => Status.bad_tiff_magic,
-        dng.Error.UnsupportedByteOrder            => Status.unsupported_byte_order,
-        dng.Error.UnsupportedCompression          => Status.unsupported_compression,
-        dng.Error.UnsupportedCompressionDeflate   => Status.unsupported_compression_deflate,
-        dng.Error.UnsupportedCompressionLossyDNG  => Status.unsupported_compression_lossy_dng,
-        dng.Error.UnsupportedCompressionAppleVc8r => Status.unsupported_compression_apple_vc8r,
-        dng.Error.UnsupportedCfaPattern           => Status.unsupported_cfa_pattern,
-        dng.Error.UnsupportedBitDepth             => Status.unsupported_bit_depth,
-        dng.Error.MissingTag                      => Status.missing_tag,
-        dng.Error.BadDimensions                   => Status.bad_dimensions,
-        dng.Error.ShortRead                       => Status.short_read,
-        dng.Error.LJPEGDecodeFailed               => Status.ljpeg_decode_failed,
-        dng.Error.OutOfMemory                     => Status.allocation_failed,
+        dng.Error.BadTiffMagic                       => Status.bad_tiff_magic,
+        dng.Error.UnsupportedByteOrder               => Status.unsupported_byte_order,
+        dng.Error.UnsupportedCompression             => Status.unsupported_compression,
+        dng.Error.UnsupportedCompressionDeflate      => Status.unsupported_compression_deflate,
+        dng.Error.UnsupportedCompressionLossyDNG     => Status.unsupported_compression_lossy_dng,
+        dng.Error.UnsupportedCompressionAppleVc8r    => Status.unsupported_compression_apple_vc8r,
+        dng.Error.UnsupportedCfaPattern              => Status.unsupported_cfa_pattern,
+        dng.Error.UnsupportedBitDepth                => Status.unsupported_bit_depth,
+        dng.Error.MissingTag                         => Status.missing_tag,
+        dng.Error.BadDimensions                      => Status.bad_dimensions,
+        dng.Error.ShortRead                          => Status.short_read,
+        dng.Error.LJPEGDecodeFailed                  => Status.ljpeg_decode_failed,
+        dng.Error.LJPEGBadMagic                      => Status.ljpeg_bad_magic,
+        dng.Error.LJPEGUnexpectedEnd                 => Status.ljpeg_unexpected_end,
+        dng.Error.LJPEGUnsupportedMarker             => Status.ljpeg_unsupported_marker,
+        dng.Error.LJPEGUnsupportedComponentCount     => Status.ljpeg_unsupported_component_count,
+        dng.Error.LJPEGUnsupportedPrecision          => Status.ljpeg_unsupported_precision,
+        dng.Error.LJPEGUnsupportedPredictor          => Status.ljpeg_unsupported_predictor,
+        dng.Error.LJPEGHasRestartMarkers             => Status.ljpeg_has_restart_markers,
+        dng.Error.LJPEGMalformedHuffmanTable         => Status.ljpeg_malformed_huffman_table,
+        dng.Error.LJPEGInvalidHuffmanCode            => Status.ljpeg_invalid_huffman_code,
+        dng.Error.OutOfMemory                        => Status.allocation_failed,
     });
 }
 

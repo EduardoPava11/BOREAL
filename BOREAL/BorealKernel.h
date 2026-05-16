@@ -33,8 +33,19 @@ typedef enum {
     BK_UNSUPPORTED_COMPRESSION_DEFLATE       = 14,  /* Compression == 8 */
     BK_UNSUPPORTED_COMPRESSION_LOSSY_DNG     = 15,  /* Compression == 34892 */
     BK_UNSUPPORTED_COMPRESSION_APPLE_VC8R    = 16,  /* Compression == 'vc8r' */
-    BK_LJPEG_DECODE_FAILED                   = 17,  /* Compression == 7 but ljpeg.decode rejected */
+    BK_LJPEG_DECODE_FAILED                   = 17,  /* generic LJPEG failure (fallback) */
     BK_NULL_POINTER                          = 18,
+    /* Per-variant LJPEG decoder errors. The Swift breadcrumb names exactly
+     * which check failed on the iPhone DNG tile — no Zig source spelunking. */
+    BK_LJPEG_BAD_MAGIC                       = 19,
+    BK_LJPEG_UNEXPECTED_END                  = 20,
+    BK_LJPEG_UNSUPPORTED_MARKER              = 21,
+    BK_LJPEG_UNSUPPORTED_COMPONENT_COUNT     = 22,
+    BK_LJPEG_UNSUPPORTED_PRECISION           = 23,
+    BK_LJPEG_UNSUPPORTED_PREDICTOR           = 24,
+    BK_LJPEG_HAS_RESTART_MARKERS             = 25,
+    BK_LJPEG_MALFORMED_HUFFMAN_TABLE         = 26,
+    BK_LJPEG_INVALID_HUFFMAN_CODE            = 27,
 } bk_status_t;
 
 /* CFA pattern enum — which channel sits at each 2×2 unit-cell position. */
