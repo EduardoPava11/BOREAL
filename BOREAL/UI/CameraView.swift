@@ -11,8 +11,12 @@ struct CameraView: View {
                 preview
                 FrameGridView(cells: coordinator.cells)
                     .padding(.horizontal, 24)
-                Phase2ProgressRow(phase2Status: coordinator.phase2Status)
-                    .padding(.horizontal, 24)
+                // Show the BurstShareCard only after a burst has actually
+                // captured something (state == .done). During capture/draining
+                // the card would be confusing — there's nothing to share yet.
+                if case .done = coordinator.state {
+                    BurstShareCard(phase2Status: coordinator.phase2Status[0])
+                }
                 statusLine
                 actionBar
                     .padding(.bottom, 36)

@@ -344,7 +344,12 @@ pub const FrameHeader = struct {
         const nf = payload[5];
         if (nf == 0 or nf > 4) return Error.UnsupportedComponentCount;
         if (payload.len < 6 + @as(usize, nf) * 3) return Error.UnexpectedEnd;
-        if (precision != 14) return Error.UnsupportedPrecision;
+        // Accept any precision in [8, 16] — iPhone DNGs may declare P=12, 14,
+        // or 16 depending on container choice. Downstream math
+        // (initial_pred, max_val) is parametric in f.precision so no other
+        // changes needed. Status 23 from real iPhone DNGs means Apple uses
+        // P != 14 (most likely 16, matching the 16-bit BitsPerSample container).
+        if (precision < 8 or precision > 16) return Error.UnsupportedPrecision;
         if (nf != 1) return Error.UnsupportedComponentCount;
 
         var comps = [_]Component{.{}} ** 4;
