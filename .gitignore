@@ -1,0 +1,22 @@
+## Xcode
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+## Swift / SwiftPM
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+## macOS
+.DS_Store
+__.SYMDEF
+
+## Zig (borealkernel/)
+.zig-cache/
+zig-out/

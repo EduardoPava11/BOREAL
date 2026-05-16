@@ -1,0 +1,66 @@
+name: BOREAL
+options:
+  bundleIdPrefix: com.daniel.boreal
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+  developmentLanguage: en
+
+settings:
+  base:
+    SWIFT_VERSION: "6.2"
+    SWIFT_STRICT_CONCURRENCY: complete
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    TARGETED_DEVICE_FAMILY: "1"            # iPhone only
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    GENERATE_INFOPLIST_FILE: NO
+
+targets:
+  BOREAL:
+    type: application
+    platform: iOS
+    sources:
+      - path: BOREAL
+        excludes:
+          - "Info.plist"
+    resources:
+      - path: BOREAL/Assets.xcassets
+    info:
+      path: BOREAL/Info.plist
+      properties:
+        CFBundleDisplayName: BOREAL
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: "BOREAL captures 64 RAW frames to build a single GIF89a from your scene."
+        NSPhotoLibraryAddUsageDescription: "BOREAL saves the finished GIF89a to your Photos library."
+        UIRequiredDeviceCapabilities:
+          - arm64
+          - metal
+          - still-camera
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.boreal
+        INFOPLIST_FILE: BOREAL/Info.plist
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
+        MTL_FAST_MATH: YES
+
+  BOREALTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - BOREALTests
+    dependencies:
+      - target: BOREAL
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.boreal.tests
+        GENERATE_INFOPLIST_FILE: YES
