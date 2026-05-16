@@ -13,7 +13,7 @@ enum BinomialEncoder {
 
     /// Output of one set's encode — 10 contiguous arrays mirroring the
     /// .bvox columnar layout. Length of each array = 4096 (one per bin).
-    struct Columns {
+    struct Columns: Equatable {
         var L_min:       [Float]
         var L_max:       [Float]
         var L_mean:      [Float]
