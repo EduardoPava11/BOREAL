@@ -50,4 +50,22 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_dng_tests.step);
     test_step.dependOn(&run_lslcd_tests.step);
+
+    // Standalone diagnostic: decode the airdropped iPhone DNG and print
+    // sample stats. Not part of `zig build test` — opt in with
+    // `zig build real-dng-check`.
+    const real_dng_exe = b.addExecutable(.{
+        .name = "real-dng-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/real_dng_check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "borealkernel", .module = root_module },
+            },
+        }),
+    });
+    const run_real_dng = b.addRunArtifact(real_dng_exe);
+    const real_dng_step = b.step("real-dng-check", "Decode airdropped iPhone DNG and print stats");
+    real_dng_step.dependOn(&run_real_dng.step);
 }

@@ -350,7 +350,12 @@ pub const FrameHeader = struct {
         // changes needed. Status 23 from real iPhone DNGs means Apple uses
         // P != 14 (most likely 16, matching the 16-bit BitsPerSample container).
         if (precision < 8 or precision > 16) return Error.UnsupportedPrecision;
-        if (nf != 1) return Error.UnsupportedComponentCount;
+        // Accept Nf ∈ {1, 2}. iPhone Bayer LJPEG uses Nf=2 (two components,
+        // one per "lane" of the Bayer mosaic — even-column samples vs
+        // odd-column samples — each with its own Huffman table + predictor
+        // history). Reverse-engineered from a real device DNG 2026-05-16:
+        //   SOF3: P=12 Y=378 X=132 Nf=2 (matches TileWidth=264, TileLength=378).
+        if (nf == 0 or nf > 2) return Error.UnsupportedComponentCount;
 
         var comps = [_]Component{.{}} ** 4;
         var i: usize = 0;
@@ -405,7 +410,10 @@ pub const ScanHeader = struct {
         const predictor = payload[tail];      // Ss
         // payload[tail + 1] is Se (= 0 for SOF3)
         const point_transform = payload[tail + 2] & 0x0F;  // Al
-        if (ns != 1) return Error.UnsupportedComponentCount;
+        // Accept Ns ∈ {1, 2} matching the FrameHeader Nf relaxation. iPhone
+        // DNG SOS uses Ns=2 with per-component Td selecting one of the two
+        // Huffman tables defined in the prior DHT markers.
+        if (ns == 0 or ns > 2) return Error.UnsupportedComponentCount;
         if (predictor != 1 and predictor != 7) return Error.UnsupportedPredictor;
         return .{
             .predictor = predictor,
@@ -519,64 +527,94 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) Error!Decoded {
 
     const f = frame orelse return Error.UnexpectedEnd;
     const s = scan orelse return Error.UnexpectedEnd;
-    const td_idx: usize = @intCast(s.components[0].td);
-    const dc_table = &(dc_tables[td_idx] orelse return Error.MalformedHuffmanTable);
+    if (s.n_components != f.n_components) return Error.UnsupportedComponentCount;
 
-    // Allocate output. Width/height from frame.
-    const w: u32 = f.width;
+    // Per-component Huffman table lookups via the Td destination in SOS.
+    // For Nf=2, components 0 and 1 typically use Td=0 and Td=1 respectively
+    // (iPhone DNG layout verified 2026-05-16). For Nf=1, only component 0.
+    var comp_tables: [2]*const HuffmanTable = undefined;
+    var ci: usize = 0;
+    while (ci < f.n_components) : (ci += 1) {
+        const td_idx: usize = @intCast(s.components[ci].td);
+        if (td_idx > 3) return Error.MalformedHuffmanTable;
+        comp_tables[ci] = &(dc_tables[td_idx] orelse return Error.MalformedHuffmanTable);
+    }
+
+    // Geometry:
+    //   f.width   = LJPEG pixels per row (one Huffman code per component per pixel).
+    //   f.height  = rows.
+    //   Nf        = components per LJPEG pixel (interleaved column-wise on output).
+    //   out_w     = output samples per row = f.width * Nf.
+    //
+    // For iPhone Bayer LJPEG: f.width=132, Nf=2 → out_w=264 = TileWidth ✓
+    const nf: u32 = f.n_components;
+    const lj_w: u32 = f.width;
     const h: u32 = f.height;
-    const samples = try allocator.alloc(u16, @as(usize, w) * @as(usize, h));
+    const out_w: u32 = lj_w * nf;
+    const samples = try allocator.alloc(u16, @as(usize, out_w) * @as(usize, h));
     errdefer allocator.free(samples);
 
     // Predictor reset: first sample of first row uses 2^(P - Pt - 1).
+    // Point transform Pt: decoder left-shifts each reconstructed sample by Pt
+    // bits before storing (ISO/IEC 10918-1 §F.1.4.4.1.2). For iPhone P=12, Pt=1
+    // → effective 11-bit data stored as even values in [0, 4094].
     const pt: u5 = @intCast(s.point_transform);
     const initial_pred: i32 = @as(i32, 1) << @intCast(@as(u5, @intCast(f.precision)) - pt - 1);
+    const max_val: i32 = (@as(i32, 1) << @intCast(@as(u5, @intCast(f.precision)))) - 1;
 
     var r = BitReader.init(bytes[entropy_start..]);
 
+    // Decode loop: per LJPEG pixel position, decode Nf samples (one per
+    // component), each with its own predictor history. Output columns
+    // interleave: component c at out_col = x_lj * Nf + c.
     var y: u32 = 0;
     while (y < h) : (y += 1) {
-        var x: u32 = 0;
-        while (x < w) : (x += 1) {
-            // Compute predictor.
-            const predicted: i32 = blk: {
-                if (x == 0 and y == 0) {
-                    break :blk initial_pred;
-                } else if (y == 0) {
-                    // First row, x>0: use Pa (left).
-                    break :blk @as(i32, samples[x - 1]);
-                } else if (x == 0) {
-                    // First column, y>0: use Pb (above).
-                    break :blk @as(i32, samples[(y - 1) * w]);
-                } else {
-                    const Pa: i32 = @as(i32, samples[y * w + (x - 1)]);
-                    const Pb: i32 = @as(i32, samples[(y - 1) * w + x]);
-                    // Pc (above-left) is only needed for predictors 3-6
-                    // which we don't support yet — skip the load.
-                    break :blk switch (s.predictor) {
-                        1 => Pa,
-                        7 => @divTrunc(Pa + Pb, 2),
-                        else => return Error.UnsupportedPredictor,
-                    };
-                }
-            };
+        var x_lj: u32 = 0;
+        while (x_lj < lj_w) : (x_lj += 1) {
+            var c: u32 = 0;
+            while (c < nf) : (c += 1) {
+                const out_col = x_lj * nf + c;
+                // Per-component predictor — each component has its own
+                // "left" neighbor (same component, previous LJPEG pixel),
+                // "above" neighbor (same component, previous row).
+                const predicted: i32 = blk: {
+                    if (x_lj == 0 and y == 0) {
+                        break :blk initial_pred;
+                    } else if (y == 0) {
+                        // First row, x_lj>0: Pa (same component, previous LJPEG pixel)
+                        const left_col = (x_lj - 1) * nf + c;
+                        break :blk @as(i32, samples[left_col]);
+                    } else if (x_lj == 0) {
+                        // First column of subsequent rows: Pb (same component above)
+                        break :blk @as(i32, samples[(y - 1) * out_w + c]);
+                    } else {
+                        const Pa: i32 = @as(i32, samples[y * out_w + (x_lj - 1) * nf + c]);
+                        const Pb: i32 = @as(i32, samples[(y - 1) * out_w + x_lj * nf + c]);
+                        break :blk switch (s.predictor) {
+                            1 => Pa,
+                            7 => @divTrunc(Pa + Pb, 2),
+                            else => return Error.UnsupportedPredictor,
+                        };
+                    }
+                };
 
-            // Decode diff: category t, then t bits, sign-extended.
-            const t = try dc_table.decode(&r);
-            const t5: u5 = @intCast(t);
-            const raw = if (t == 0) @as(u32, 0) else try r.readBits(t5);
-            const diff = BitReader.extend(raw, t5);
+                // Decode diff via this component's Huffman table.
+                const t = try comp_tables[c].decode(&r);
+                const t5: u5 = @intCast(t);
+                const raw = if (t == 0) @as(u32, 0) else try r.readBits(t5);
+                const diff = BitReader.extend(raw, t5);
 
-            // Reconstruct + clamp to precision range.
-            const recon = predicted + diff;
-            const max_val = (@as(i32, 1) << @intCast(@as(u5, @intCast(f.precision)))) - 1;
-            const clipped = @max(@as(i32, 0), @min(max_val, recon));
-            samples[y * w + x] = @intCast(clipped);
+                // Reconstruct, point-transform left-shift, clamp.
+                const recon = predicted + diff;
+                const shifted = recon << pt;
+                const clipped = @max(@as(i32, 0), @min(max_val, shifted));
+                samples[y * out_w + out_col] = @intCast(clipped);
+            }
         }
     }
 
     return .{
-        .width = w,
+        .width = out_w,         // physical width in u16 samples (= lj_w * nf)
         .height = h,
         .precision = f.precision,
         .samples = samples,

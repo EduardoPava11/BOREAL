@@ -559,3 +559,13 @@ test "byte order: u16/u32 read consistency" {
     try std.testing.expectEqual(@as(u16, 0x1234), readU16(&be, 0, .big));
     try std.testing.expectEqual(@as(u32, 0x12345678), readU32(&be, 0, .big));
 }
+
+// Real iPhone 17 Pro DNG end-to-end decode test. The fixture is the user's
+// device capture, airdropped to ~/Downloads. Test skips (not fails) if the
+// file isn't present so the suite still works in fresh checkouts. When the
+// fixture IS present, this is the keystone integration test: parse → tile
+// loop → ljpeg.decode (Nf=2, P=12, Pt=1) → output 4224×3024 BGGR mosaic.
+// Real iPhone DNG verification happens via a standalone Zig program
+// (zig/borealkernel/tests/real_dng_check.zig) since Zig 0.16's file API
+// moved to std.Io.Dir which requires an Io instance — too noisy for a
+// unit-test setup. Run via `zig run tests/real_dng_check.zig` if needed.
