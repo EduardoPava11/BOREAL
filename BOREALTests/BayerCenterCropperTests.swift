@@ -22,12 +22,15 @@ final class BayerCenterCropperTests: XCTestCase {
 
     func testCropOriginCentersTheSquareOnSensor() {
         // Slack must be evenly split → origin == (sensorDim - cropSize) / 2.
+        // iPhone 17 Pro main wide: sensor 4224×3024 → crop origin (640, 40).
         XCTAssertEqual(BayerCropPlan.cropOriginX,
                        (BayerCropPlan.sensorWidth - BayerCropPlan.cropSize) / 2)
         XCTAssertEqual(BayerCropPlan.cropOriginY,
                        (BayerCropPlan.sensorHeight - BayerCropPlan.cropSize) / 2)
-        XCTAssertEqual(BayerCropPlan.cropOriginX, 544)
+        XCTAssertEqual(BayerCropPlan.cropOriginX, 640)
         XCTAssertEqual(BayerCropPlan.cropOriginY, 40)
+        XCTAssertEqual(BayerCropPlan.sensorWidth, 4224)
+        XCTAssertEqual(BayerCropPlan.sensorHeight, 3024)
     }
 
     func testCropFitsWithinSensor() {
@@ -46,10 +49,10 @@ final class BayerCenterCropperTests: XCTestCase {
 
     // MARK: - Behavior on synthetic mosaics
 
-    /// Build a 4032×3024 mosaic where each sample encodes its position with
+    /// Build a 4224×3024 mosaic where each sample encodes its position with
     /// the row in the high byte and column in the low byte, mod 256. The
     /// truncation is fine — we only need a pattern that lets us assert where
-    /// each sample originated.
+    /// each sample originated. CFA pattern is BGGR (iPhone 17 Pro main wide).
     private func makeSensorMosaic() -> BayerMosaic {
         let w = BayerCropPlan.sensorWidth
         let h = BayerCropPlan.sensorHeight
@@ -61,6 +64,7 @@ final class BayerCenterCropperTests: XCTestCase {
             }
         }
         return BayerMosaic(width: w, height: h,
+                           cfaPattern: .bggr,
                            bitsPerSample: 14,
                            blackLevel: 528, whiteLevel: 16383,
                            samples: samples)
@@ -87,15 +91,17 @@ final class BayerCenterCropperTests: XCTestCase {
         let src = makeSensorMosaic()
         let cropped = try BayerCenterCropper.centerCrop(src)
 
-        // Cropped (0,0) corresponds to source (40, 544).
+        // Cropped (0,0) corresponds to source (cropOriginY, cropOriginX) = (40, 640).
         let topLeft = cropped.sample(row: 0, col: 0)
-        XCTAssertEqual(topLeft, UInt16((40 & 0xFF) << 8) | UInt16(544 & 0xFF))
+        XCTAssertEqual(topLeft,
+                       UInt16((BayerCropPlan.cropOriginY & 0xFF) << 8)
+                       | UInt16(BayerCropPlan.cropOriginX & 0xFF))
 
-        // Cropped (cropSize-1, cropSize-1) corresponds to source (40+2943, 544+2943).
+        // Cropped (cropSize-1, cropSize-1) corresponds to source corner.
         let last = BayerCropPlan.cropSize - 1
         let bottomRight = cropped.sample(row: last, col: last)
         let srcRow = BayerCropPlan.cropOriginY + last  // 40 + 2943 = 2983
-        let srcCol = BayerCropPlan.cropOriginX + last  // 544 + 2943 = 3487
+        let srcCol = BayerCropPlan.cropOriginX + last  // 640 + 2943 = 3583
         XCTAssertEqual(bottomRight, UInt16((srcRow & 0xFF) << 8) | UInt16(srcCol & 0xFF))
 
         // Spot-check an interior point.
@@ -106,33 +112,46 @@ final class BayerCenterCropperTests: XCTestCase {
         XCTAssertEqual(interior, UInt16((isr & 0xFF) << 8) | UInt16(isc & 0xFF))
     }
 
-    func testCenterCropPreservesRGGBPhase() throws {
-        // Build a mosaic where each sample carries its (row%2, col%2) parity:
-        //   R  (even, even) → 1000 + 0 + 0 = 1000
-        //   Gr (even, odd ) → 1000 + 0 + 1 = 1001
-        //   Gb (odd,  even) → 1000 + 2 + 0 = 1002
-        //   B  (odd,  odd ) → 1000 + 2 + 1 = 1003
+    func testCenterCropPreservesBGGRPhase() throws {
+        // iPhone 17 Pro main wide ships BGGR: B at (even,even), G at the
+        // off-diagonals, R at (odd,odd). Build a synthetic mosaic where each
+        // sample's value encodes its (row%2, col%2) parity, then verify the
+        // cropped (0,0) lands on a B photosite (because cropOriginX=640 and
+        // cropOriginY=40 are both even).
+        //
+        //   B (even, even) → 2000 + 0 + 0 = 2000
+        //   G (even, odd ) → 2000 + 0 + 1 = 2001
+        //   G (odd,  even) → 2000 + 2 + 0 = 2002
+        //   R (odd,  odd ) → 2000 + 2 + 1 = 2003
         let w = BayerCropPlan.sensorWidth
         let h = BayerCropPlan.sensorHeight
         var samples = [UInt16](repeating: 0, count: w * h)
         for r in 0..<h {
             for c in 0..<w {
-                let rp = r % 2
-                let cp = c % 2
-                samples[r * w + c] = UInt16(1000 + rp * 2 + cp)
+                samples[r * w + c] = UInt16(2000 + (r % 2) * 2 + (c % 2))
             }
         }
         let src = BayerMosaic(width: w, height: h,
+                              cfaPattern: .bggr,
                               bitsPerSample: 14,
                               blackLevel: 528, whiteLevel: 16383,
                               samples: samples)
         let cropped = try BayerCenterCropper.centerCrop(src)
 
-        // Origin (544, 40) is even-even → R photosite. So cropped (0,0) must read 1000.
-        XCTAssertEqual(cropped.sample(row: 0, col: 0), 1000, "cropped (0,0) must be R")
-        XCTAssertEqual(cropped.sample(row: 0, col: 1), 1001, "cropped (0,1) must be Gr")
-        XCTAssertEqual(cropped.sample(row: 1, col: 0), 1002, "cropped (1,0) must be Gb")
-        XCTAssertEqual(cropped.sample(row: 1, col: 1), 1003, "cropped (1,1) must be B")
+        // Origin (640, 40) is even-even → B photosite under BGGR.
+        XCTAssertEqual(cropped.sample(row: 0, col: 0), 2000, "cropped (0,0) must be B (even,even)")
+        XCTAssertEqual(cropped.sample(row: 0, col: 1), 2001, "cropped (0,1) must be G (even,odd)")
+        XCTAssertEqual(cropped.sample(row: 1, col: 0), 2002, "cropped (1,0) must be G (odd,even)")
+        XCTAssertEqual(cropped.sample(row: 1, col: 1), 2003, "cropped (1,1) must be R (odd,odd)")
+
+        // CFA pattern carries through the crop.
+        XCTAssertEqual(cropped.cfaPattern, .bggr)
+
+        // Channel-at-position interpretation via CFAPattern.channel(...) matches.
+        XCTAssertEqual(cropped.cfaPattern.channel(rowParity: 0, colParity: 0), .b)
+        XCTAssertEqual(cropped.cfaPattern.channel(rowParity: 0, colParity: 1), .g)
+        XCTAssertEqual(cropped.cfaPattern.channel(rowParity: 1, colParity: 0), .g)
+        XCTAssertEqual(cropped.cfaPattern.channel(rowParity: 1, colParity: 1), .r)
     }
 
     // MARK: - Error paths
@@ -140,6 +159,7 @@ final class BayerCenterCropperTests: XCTestCase {
     func testWrongSensorDimsThrows() {
         let badSamples = [UInt16](repeating: 0, count: 100 * 100)
         let bad = BayerMosaic(width: 100, height: 100,
+                              cfaPattern: .bggr,
                               bitsPerSample: 14,
                               blackLevel: 0, whiteLevel: 16383,
                               samples: badSamples)

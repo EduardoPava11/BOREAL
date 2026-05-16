@@ -71,8 +71,12 @@ enum BayerCenterCropper {
             let rowStart = row * srcW + x0
             out.append(contentsOf: src.samples[rowStart..<(rowStart + s)])
         }
+        // Pass the CFA pattern through unchanged: even-origin crop preserves
+        // the channel-at-(0,0) invariant, so the cropped mosaic carries the
+        // same pattern as the source.
         return BayerMosaic(width: s,
                            height: s,
+                           cfaPattern: src.cfaPattern,
                            bitsPerSample: src.bitsPerSample,
                            blackLevel: src.blackLevel,
                            whiteLevel: src.whiteLevel,
