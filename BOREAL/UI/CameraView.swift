@@ -11,6 +11,8 @@ struct CameraView: View {
                 preview
                 FrameGridView(cells: coordinator.cells)
                     .padding(.horizontal, 24)
+                Phase2ProgressRow(phase2Status: coordinator.phase2Status)
+                    .padding(.horizontal, 24)
                 statusLine
                 actionBar
                     .padding(.bottom, 36)

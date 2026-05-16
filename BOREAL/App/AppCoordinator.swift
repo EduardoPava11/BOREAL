@@ -32,6 +32,12 @@ final class AppCoordinator {
     /// shorter `cells` array, so growing it to 64 is harmless for UI.
     var cells: [FrameCell] = Array(repeating: FrameCell(), count: PyramidTable.totalFrameCount)
 
+    /// Per-set Phase 2 status. Updated from the .setComplete side effect:
+    /// pending while the SetProcessor task is in flight, then done or failed.
+    /// `Phase2ProgressRow` reads this to render a row of 16 dots.
+    enum Phase2Status: Equatable { case pending, done, failed }
+    var phase2Status: [Int: Phase2Status] = [:]
+
     /// Persisted-shape frame records, populated as deliveries / skips arrive.
     private var frames: [CapturedFrame?] = Array(repeating: nil, count: PyramidTable.totalFrameCount)
 
@@ -102,18 +108,26 @@ final class AppCoordinator {
             // Phase 2 trigger: run the full set's pipeline (decode → bin →
             // encode → write .bvox) on a background task so the camera can
             // proceed with capturing the next set (when scaling back to
-            // multi-set bursts). Failures land in Log.processing; no UI
-            // change for now (item 10 will surface per-set progress).
-            Task.detached(priority: .userInitiated) {
+            // multi-set bursts). Failures land in Log.processing AND in
+            // phase2Status so the UI can surface them.
+            phase2Status[setIdx] = .pending
+            Task.detached(priority: .userInitiated) { [weak self] in
                 do {
                     _ = try await SetProcessor.process(setIdx: setIdx)
+                    await MainActor.run {
+                        self?.phase2Status[setIdx] = .done
+                    }
                 } catch {
                     Log.processing.error("Phase 2 set \(setIdx) failed: \(String(describing: error), privacy: .public)")
+                    await MainActor.run {
+                        self?.phase2Status[setIdx] = .failed
+                    }
                 }
             }
         case .userReset:
             cells = Array(repeating: FrameCell(), count: PyramidTable.totalFrameCount)
             frames = Array(repeating: nil, count: PyramidTable.totalFrameCount)
+            phase2Status.removeAll()
         default:
             break
         }
