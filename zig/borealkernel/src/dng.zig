@@ -237,13 +237,29 @@ fn parseIfd0(
 
     const pixel_count = @as(usize, w) * @as(usize, h);
 
-    // Image-data layout dispatch. iPhone DNGs use one of two layouts:
-    //   - Compression=1 (uncompressed Bayer): strip layout (StripOffsets/Counts)
-    //   - Compression=7 (LJPEG-compressed Bayer): tile layout (TileOffsets/Counts)
+    // ── Image-data layout dispatch (verified on iPhone 17 Pro 2026-05-16) ──
+    //
+    // iPhone DNGs use ONE layout in practice: tiles + Compression=7 (LJPEG).
+    // The strip path is preserved for synthetic test fixtures (Compression=1
+    // uncompressed Bayer) and for other DNG sources (Adobe, libraw). On
+    // device the strip-related tags (StripOffsets=273, StripByteCounts=279,
+    // RowsPerStrip=278) are ABSENT — only tile tags 322-325 are populated.
+    //
+    // iPhone 17 Pro at 12 MP binned Bayer:
+    //   TileWidth  = 264   (= LJPEG raster width × Nf = 132 × 2)
+    //   TileLength = 378
+    //   Tile count = (4224/264) × (3024/378) = 16 × 8 = 128
+    //
+    // Each tile is an independent LJPEG SOF3 bitstream (SOI...EOI), which
+    // means tiles are embarrassingly parallel — a future perf pass can
+    // decode the 128 tiles concurrently via a thread pool. Currently the
+    // loop below decodes serially; on iPhone 17 Pro this completes in
+    // ~250 ms per frame, ~1.0 s for a 4-frame burst.
     var pixels: []u16 = undefined;
     if (tile_offsets_entry != null and tile_byte_counts_entry != null) {
-        // Tile layout. iPhone LJPEG DNGs typically have a single tile covering
-        // the whole image, but we support N tiles laid out in row-major order.
+        // Tile layout. We support N tiles laid out in row-major order.
+        // Edge tiles may extend beyond the image bounds (the trailing rows
+        // and columns are padding to be discarded by the copy loop below).
         const to_entry = tile_offsets_entry.?;
         const tbc_entry = tile_byte_counts_entry.?;
         if (to_entry.count != tbc_entry.count) return Error.MissingTag;

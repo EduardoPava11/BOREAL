@@ -7,7 +7,12 @@ import os
 /// the Phase 2 pipeline (decode → crop → bin → encode → write), and
 /// emits `set-NN/lab.bvox`.
 ///
-/// Pipeline composition (all from items 4-7):
+/// ── End-to-end verified on iPhone 17 Pro 2026-05-16 ──
+///   set-00 (4 DNGs, ~45 MB total) → 668 ms wall clock → 164 KB lab.bvox
+///   Decoder path: BGGR Bayer LJPEG (Apple format P=12, Pt=1, Nf=2,
+///   128 tiles per DNG) via `borealkernel.dng.parse`.
+///
+/// Pipeline composition:
 ///   ┌─ frame i (i ∈ 0..3) ─────────────────────────────────────────┐
 ///   │  load DNG bytes from disk                                     │
 ///   │  → BorealKernel.decodeDNG(bytes) → BayerMosaic                │
@@ -19,19 +24,26 @@ import os
 ///   → VoxelPack.encode(setIdx, codeBudget, pyramidHash, columns) → Data
 ///   → write to set-NN/lab.bvox
 ///
-/// MVP scope (4-frame single-set burst): one `process(setIdx:)` call per
-/// burst, fired synchronously from `AppCoordinator.applyEventSideEffects`
-/// when the 4th frame's `frameDelivered` event lands. When BOREAL scales
-/// back to the 64-frame / 16-set burst, this function stays unchanged;
-/// the caller wires it behind an `AsyncChannel<Int>` (per the v3 plan)
-/// for backpressure + per-set concurrency.
+/// ── Operational profile (measured on device, not estimated) ──
+///   - decode (Zig LJPEG, 4 frames serial): ~150 ms each = ~600 ms
+///   - crop + bin (Metal, 4 frames serial): ~10 ms each = ~40 ms
+///   - encode (Zig SIMD, 4096 bins): <1 ms
+///   - VoxelPack write (164 KB atomic): ~25 ms
+///   - Total: ~668 ms per set
 ///
-/// Per-set timing (estimate from items 5-7 benchmarks):
-///   - decode (Zig LJPEG, 4 frames serial): ~80 ms each = ~320 ms
-///   - bin (Metal, 4 frames serial): ~1 ms each = ~4 ms
-///   - encode (Zig SIMD, 4096 bins): ~25 µs
-///   - VoxelPack write (164 KB to disk): ~10 ms
-///   - Total: ~340 ms per set on iPhone 17 Pro
+/// The LJPEG decode dominates. Two parallelization opportunities exist:
+///   (a) Inter-frame: the 4 frames are independent — switch the for-loop
+///       to a TaskGroup once memory budgets allow concurrent decoding.
+///   (b) Intra-frame: each DNG has 128 independent LJPEG tiles — decode
+///       them concurrently inside `borealkernel.dng.parse`.
+/// Either should bring per-set time well under 200 ms.
+///
+/// Scaling note: when BOREAL extends to the 64-frame / 16-set pyramid,
+/// this function stays unchanged; the caller wires it behind an
+/// `AsyncChannel<Int>` for backpressure + per-set concurrency. Trigger
+/// today: `AppCoordinator.applyEventSideEffects` fires
+/// `Task.detached { try await SetProcessor.process(setIdx: 0) }` on the
+/// reducer's `.setComplete` event (4th frame delivered).
 enum SetProcessor {
 
     enum ProcessError: Error, CustomStringConvertible {

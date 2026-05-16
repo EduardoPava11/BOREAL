@@ -1,25 +1,62 @@
 //! Lossless JPEG (SOF3) decoder for iPhone Bayer RAW DNGs.
 //!
-//! Scope (intentionally narrow per BOREAL plan; fail-loud on anything outside):
-//!   - SOF3 (lossless JPEG, Huffman entropy) — Compression=7 in TIFF
-//!   - 1 component (the Bayer mosaic as single-channel)
-//!   - 14-bit precision (P=14)
-//!   - Predictor 1 (Pa = sample to the left) — most common for Bayer
-//!     iPhone DNGs; supports 7 (average of left + above) too.
-//!   - No restart markers (DRI=0). Will fail loudly if encountered.
+//! ─── Apple iPhone 17 Pro format (reverse-engineered, verified 2026-05-16) ───
+//!
+//!   Container : TIFF/DNG with Compression=7, 128 tiles in a 16×8 grid
+//!   Tile size : TileWidth=264 (= lj_w × Nf), TileLength=378
+//!   LJPEG SOF3 markers:
+//!     P  = 12   sub-precision per component (NOT 14 — see Pt below)
+//!     Y  = 378  raster height (matches TileLength)
+//!     X  = 132  raster width (TileWidth / Nf)
+//!     Nf = 2    TWO interleaved components per LJPEG pixel
+//!   LJPEG SOS markers:
+//!     Ns = 2    both components in one scan
+//!     Td = [0, 1]  per-component Huffman table indices
+//!     Pt = 1    point transform: left-shift output by 1 bit
+//!     Pred = 1  left-neighbor predictor
+//!   DHT      : two segments (one per component)
+//!
+//!   Effective output bit depth: P + Pt = 13 bits per sample, with
+//!   BlackLevel=528 / WhiteLevel=4095 in the post-shift domain.
+//!
+//! ─── Critical correctness invariants (DO NOT BREAK without re-verifying) ───
+//!
+//!   1. Per-component predictor history.  Each of the Nf components keeps
+//!      its OWN `left` and `above` neighbor values. Cross-component bleed
+//!      would scramble the two greens in a BGGR cell.
+//!   2. Per-component Huffman table dispatch via SOS Td.  Component 0 uses
+//!      DHT slot 0, component 1 uses DHT slot 1. Wiring them to the same
+//!      table corrupts the residuals silently.
+//!   3. Point transform Pt applied on emission, not on residual.  The
+//!      shift is `recon << Pt` AFTER reconstructing the sample, not before.
+//!   4. Top-row initial prediction = `1 << (P - Pt - 1)` per ISO/IEC
+//!      10918-1 §H.1.2.1.  For Apple's (P=12, Pt=1): initial_pred=1024
+//!      in the pre-shift domain, becoming 2048 after the post-emission
+//!      `<< Pt` left-shift.  Getting Pt's sign wrong cascades a ~1024 DN
+//!      bias down the entire first row of the tile.
+//!   5. Interleaved output: out_col = x_lj × Nf + c.  The two components
+//!      MUST be interleaved into the TIFF tile, not appended as separate
+//!      planes.
+//!
+//! ─── Scope (fail-loud on anything outside) ───
+//!
+//!   - SOF3 only (Compression=7). SOF0/1/2 (DCT-based) explicitly rejected.
+//!   - Nf ∈ {1, 2}.  Nf=1 path preserved for synthetic tests.
+//!   - P ∈ [8, 16].  Earlier `P==14` gate was wrong (Apple uses P=12).
+//!   - Predictor ∈ {1, 7}.  Apple uses 1.
+//!   - DRI = 0.  Restart markers not implemented (Apple doesn't use them).
 //!
 //! Output: a packed u16 mosaic, row-major, length = width × height.
 //!
-//! Reference: ISO/IEC 10918-1 Annex H (lossless JPEG); DNG 1.4 §3.
+//! Reference: ISO/IEC 10918-1 Annex H; DNG 1.4 §3; verified end-to-end on
+//! device via `zig build real-dng-check` against airdropped frame-0.dng.
 //!
-//! Build order in this file (each unit individually tested):
-//!   - Section 1: BitReader (MSB-first, byte-stuffing aware)
-//!   - Section 2: Markers + parseNextMarker
-//!   - Section 3: HuffmanTable (canonical, build + lookup)         ← item 2b
-//!   - Section 4: Frame/Scan headers (SOF3 + SOS)                  ← item 2c
-//!   - Section 5: decode() top-level                                ← item 2c
-//!
-//! The SCAFFOLDING in this file (sections 1-2) is item 2a.
+//! File layout (each section individually tested):
+//!   Section 1: BitReader (MSB-first, byte-stuffing aware)
+//!   Section 2: Markers + parseNextMarker
+//!   Section 3: HuffmanTable (canonical, build + lookup)
+//!   Section 4: Frame/Scan headers (SOF3 + SOS)
+//!   Section 5: decode() top-level (multi-component, point-transform aware)
 
 const std = @import("std");
 
@@ -27,10 +64,10 @@ pub const Error = error{
     BadMagic,                 // SOI not at start
     UnexpectedEnd,            // ran out of bytes mid-decode
     UnsupportedMarker,        // hit a marker we don't handle (e.g., SOF0 baseline)
-    UnsupportedComponentCount,// SOF3 with components ≠ 1
-    UnsupportedPrecision,     // SOF3 with P ∉ {14}  (extend later if needed)
-    UnsupportedPredictor,     // SOS with predictor ∉ {1, 7}
-    HasRestartMarkers,        // DRI > 0 — not in scope yet
+    UnsupportedComponentCount,// SOF3 with components ∉ {1, 2}
+    UnsupportedPrecision,     // SOF3 with P ∉ [8, 16]  (Apple uses P=12)
+    UnsupportedPredictor,     // SOS with predictor ∉ {1, 7} (Apple uses 1)
+    HasRestartMarkers,        // DRI > 0 — Apple doesn't emit these; reject if seen
     MalformedHuffmanTable,    // DHT with inconsistent code lengths
     InvalidHuffmanCode,       // bit pattern not in any table entry
     OutOfMemory,
@@ -554,10 +591,21 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) Error!Decoded {
     const samples = try allocator.alloc(u16, @as(usize, out_w) * @as(usize, h));
     errdefer allocator.free(samples);
 
-    // Predictor reset: first sample of first row uses 2^(P - Pt - 1).
+    // Initial predictor for first sample of first row: 2^(P - Pt - 1).
+    // Per ISO/IEC 10918-1 §H.1.2.1 — this is the "neutral" anchor in the
+    // pre-shift domain (for iPhone P=12, Pt=1 → initial_pred=1024).
+    //
     // Point transform Pt: decoder left-shifts each reconstructed sample by Pt
-    // bits before storing (ISO/IEC 10918-1 §F.1.4.4.1.2). For iPhone P=12, Pt=1
-    // → effective 11-bit data stored as even values in [0, 4094].
+    // bits before storing (ISO/IEC 10918-1 §H.1.2). Apple emits Pt=1; the
+    // shift is applied at emission (line `recon << pt` below), NOT to the
+    // predictor history (predictor neighbors are stored AFTER shift, so
+    // history-vs-shift composition is automatic).
+    //
+    // max_val clamp is `(1 << P) - 1 = 4095` for P=12, matching the observed
+    // WhiteLevel from iPhone DNG metadata. Post-shift values that exceed this
+    // (e.g. saturated optical-white pixels) are clipped — matches scene clip
+    // behavior. Verified on device 2026-05-16: real iPhone DNG output landed
+    // in [0, 4095], mean ≈ 958 — consistent with BlackLevel=528.
     const pt: u5 = @intCast(s.point_transform);
     const initial_pred: i32 = @as(i32, 1) << @intCast(@as(u5, @intCast(f.precision)) - pt - 1);
     const max_val: i32 = (@as(i32, 1) << @intCast(@as(u5, @intCast(f.precision)))) - 1;
@@ -574,9 +622,20 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) Error!Decoded {
             var c: u32 = 0;
             while (c < nf) : (c += 1) {
                 const out_col = x_lj * nf + c;
-                // Per-component predictor — each component has its own
-                // "left" neighbor (same component, previous LJPEG pixel),
-                // "above" neighbor (same component, previous row).
+                // ── Per-component predictor (LOAD-BEARING) ──
+                // Each of the Nf components MUST have its own neighbor
+                // history. The "left" neighbor for component c at LJPEG
+                // pixel x is the SAME component (c) at LJPEG pixel x-1,
+                // which lives at output column (x-1)*nf + c — NOT at
+                // output column out_col - 1. The "+ c" preserves
+                // component separation across the interleave.
+                //
+                // Why this matters: for Bayer BGGR, the two greens in a
+                // 2×2 cell come from DIFFERENT components in the LJPEG
+                // sense (one even-column, one odd-column). If predictor
+                // history cross-bleeds, the two greens diverge wildly
+                // (typically by 50-200 DN). The on-device sanity check
+                // (greens within ±2 DN) is the regression signal here.
                 const predicted: i32 = blk: {
                     if (x_lj == 0 and y == 0) {
                         break :blk initial_pred;

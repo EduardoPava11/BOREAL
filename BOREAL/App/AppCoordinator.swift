@@ -105,11 +105,28 @@ final class AppCoordinator {
             cells[slot].status = .skipped(reason)
             frames[slot] = .placeholder(slot: slot, reason: reason.rawValue)
         case .setComplete(let setIdx):
-            // Phase 2 trigger: run the full set's pipeline (decode → bin →
-            // encode → write .bvox) on a background task so the camera can
-            // proceed with capturing the next set (when scaling back to
-            // multi-set bursts). Failures land in Log.processing AND in
-            // phase2Status so the UI can surface them.
+            // ── Phase 2 auto-trigger (verified on device 2026-05-16) ──
+            // Fires the full Phase 2 pipeline (decode → crop → bin → encode →
+            // write .bvox) on a detached background task. Two invariants
+            // keep this safe to scale to multi-set bursts:
+            //
+            //   1. `Task.detached`, not `Task { ... }`. Inheriting actor
+            //      isolation from @MainActor would serialize all set
+            //      processing through the main thread. Detached frees the
+            //      pipeline to run on a cooperative thread-pool worker,
+            //      which is what makes the 668 ms Phase 2 wall time NOT
+            //      block the next capture's UI.
+            //
+            //   2. `[weak self]` capture. If the user reset / backgrounded
+            //      the app while a Phase 2 task is in flight, we don't want
+            //      to hold AppCoordinator alive or surface stale phase2Status
+            //      writes; weak-self lets the task no-op cleanly on
+            //      completion if the coordinator is gone.
+            //
+            // Status surfacing: phase2Status[setIdx] feeds BurstShareCard's
+            // status row (.pending / .done / .failed). Setting it before
+            // dispatch ensures the UI flips to "processing" the instant the
+            // 4th frame lands, not when the decoder starts.
             phase2Status[setIdx] = .pending
             Task.detached(priority: .userInitiated) { [weak self] in
                 do {
