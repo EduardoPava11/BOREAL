@@ -25,6 +25,7 @@ enum BurstEvent: Sendable {
     case frameDelivered(CapturedRaw)
     case frameSkipped(slot: Int, reason: SkipReason)
     case postProcessFinished(slot: Int, success: Bool)
+    case setComplete(setIdx: Int)                     // Phase 1 just wrote the 4th frame of set N
     case userReset
     case failed(String)
 }

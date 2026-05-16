@@ -159,6 +159,26 @@ final class BurstReducerTests: XCTestCase {
         XCTAssertEqual(s, from, "delivery for slot != current is ignored")
     }
 
+    // MARK: - .setComplete (Phase 2 trigger event)
+
+    func testSetCompleteIsNoopForFSM() {
+        // .setComplete is a side-effect-only event: it triggers the Phase 2
+        // pipeline in AppCoordinator.applyEventSideEffects, but the FSM
+        // state machine never transitions on it. Verify across all states.
+        let states: [BurstState] = [
+            .idle,
+            .preparing,
+            .capturing(slot: 0, captured: 0, skipped: [], startedAt: Date()),
+            .draining(captured: 4, skipped: [], postProcessLeft: 4, startedAt: Date()),
+            .done(captured: 4, skipped: [], folder: URL(fileURLWithPath: "/tmp"), durationSec: 0.5),
+            .failed(message: "x"),
+        ]
+        for s in states {
+            XCTAssertEqual(BurstReducer.reduce(s, .setComplete(setIdx: 0)), s,
+                           ".setComplete must be a no-op from any state, was \(s)")
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeRaw(slot: Int) -> CapturedRaw {

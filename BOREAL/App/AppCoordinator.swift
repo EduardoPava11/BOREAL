@@ -87,9 +87,30 @@ final class AppCoordinator {
         switch event {
         case .frameDelivered(let raw):
             postProcessFrame(raw)
+            // After every 4th frameDelivered, the full set is on disk.
+            // Fire .setComplete recursively; the side effect for that event
+            // spawns the Phase 2 pipeline detached so capture is unblocked.
+            let frameInSet = raw.slot % PyramidTable.framesPerSet
+            if frameInSet == PyramidTable.framesPerSet - 1 {
+                let completedSetIdx = raw.slot / PyramidTable.framesPerSet
+                handle(.setComplete(setIdx: completedSetIdx))
+            }
         case .frameSkipped(let slot, let reason):
             cells[slot].status = .skipped(reason)
             frames[slot] = .placeholder(slot: slot, reason: reason.rawValue)
+        case .setComplete(let setIdx):
+            // Phase 2 trigger: run the full set's pipeline (decode → bin →
+            // encode → write .bvox) on a background task so the camera can
+            // proceed with capturing the next set (when scaling back to
+            // multi-set bursts). Failures land in Log.processing; no UI
+            // change for now (item 10 will surface per-set progress).
+            Task.detached(priority: .userInitiated) {
+                do {
+                    _ = try await SetProcessor.process(setIdx: setIdx)
+                } catch {
+                    Log.processing.error("Phase 2 set \(setIdx) failed: \(String(describing: error), privacy: .public)")
+                }
+            }
         case .userReset:
             cells = Array(repeating: FrameCell(), count: PyramidTable.totalFrameCount)
             frames = Array(repeating: nil, count: PyramidTable.totalFrameCount)

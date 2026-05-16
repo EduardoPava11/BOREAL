@@ -107,6 +107,13 @@ enum BurstReducer {
             default:
                 return state
             }
+
+        case .setComplete:
+            // Phase 2 trigger event — the FSM doesn't transition on this.
+            // The Phase 2 pipeline runs as a side effect in applyEventSideEffects,
+            // detached from the burst state machine so capture proceeds while
+            // Phase 2 processes the just-completed set in parallel.
+            return state
         }
     }
 }
