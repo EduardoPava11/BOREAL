@@ -11,10 +11,11 @@
 
 const std = @import("std");
 
-pub const dng    = @import("dng.zig");
-pub const kernel = @import("kernel.zig");
-pub const bayer  = @import("bayer.zig");
-pub const ljpeg  = @import("ljpeg.zig");
+pub const dng      = @import("dng.zig");
+pub const kernel   = @import("kernel.zig");
+pub const bayer    = @import("bayer.zig");
+pub const ljpeg    = @import("ljpeg.zig");
+pub const binomial = @import("binomial.zig");
 
 /// Status codes — matches `bk_status_t` enum in BorealKernel.h.
 pub const Status = enum(c_int) {
@@ -174,6 +175,45 @@ export fn bk_free_mosaic(mosaic: *Mosaic) void {
         std.heap.c_allocator.free(slice);
         mosaic.samples = null;
     }
+}
+
+/// Per-bin binomial encode for one set's 4 LAB frames.
+///
+/// `lab_frames` points to 4 × 64×64×3 = 49,152 floats laid out as
+/// [frame_0_lab_interleaved, frame_1, frame_2, frame_3].
+///
+/// All 10 output buffers must point to caller-allocated arrays of at least
+/// 4096 elements (SPATIAL_BINS). Caller owns all buffers; this function
+/// just writes into them.
+///
+/// codes_flags layout per bin:
+///   bits  0..7   = L_code (one of 256 base-4 quantization codes)
+///   bits  8..15  = a_code
+///   bits 16..23  = b_code
+///   bits 24..31  = flags (precomputed predicates; see binomial.zig FLAG_*)
+export fn bk_binomial_encode_set(
+    lab_frames:  [*]const f32,    // 49,152 floats
+    col_L_min:   [*]f32,
+    col_L_max:   [*]f32,
+    col_L_mean:  [*]f32,
+    col_a_min:   [*]f32,
+    col_a_max:   [*]f32,
+    col_a_mean:  [*]f32,
+    col_b_min:   [*]f32,
+    col_b_max:   [*]f32,
+    col_b_mean:  [*]f32,
+    col_codes_flags: [*]u32,
+) c_int {
+    const total_floats = binomial.FLOATS_PER_FRAME * binomial.FRAMES_PER_SET;
+    const spatial = binomial.SPATIAL_BINS;
+    binomial.encodeSet(
+        lab_frames[0..total_floats],
+        col_L_min[0..spatial],   col_L_max[0..spatial],   col_L_mean[0..spatial],
+        col_a_min[0..spatial],   col_a_max[0..spatial],   col_a_mean[0..spatial],
+        col_b_min[0..spatial],   col_b_max[0..spatial],   col_b_mean[0..spatial],
+        col_codes_flags[0..spatial],
+    );
+    return @intFromEnum(Status.ok);
 }
 
 test "root: status enum stays in sync with bridging header values" {

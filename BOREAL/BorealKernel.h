@@ -85,6 +85,42 @@ int bk_decode_dng_to_mosaic(
  * mosaic with samples == null (e.g., after a failed decode). */
 void bk_free_mosaic(bk_mosaic_t *mosaic);
 
+/* Per-bin binomial encode for one set's 4 LAB frames.
+ *
+ * lab_frames: pointer to 4 × 64*64*3 = 49,152 floats, laid out as
+ *   [frame0_lab_interleaved, frame1, frame2, frame3].
+ * Each col_* output buffer must point to a caller-allocated array of at
+ * least 4096 elements (= 64*64 spatial bins). Caller owns all buffers.
+ * col_codes_flags layout per bin:
+ *   bits  0..7   = L_code (256 base-4 quantization patterns)
+ *   bits  8..15  = a_code
+ *   bits 16..23  = b_code
+ *   bits 24..31  = flags (precomputed predicates) */
+int bk_binomial_encode_set(
+    const float *lab_frames,
+    float       *col_L_min,
+    float       *col_L_max,
+    float       *col_L_mean,
+    float       *col_a_min,
+    float       *col_a_max,
+    float       *col_a_mean,
+    float       *col_b_min,
+    float       *col_b_max,
+    float       *col_b_mean,
+    uint32_t    *col_codes_flags
+);
+
+/* Flag bits packed into col_codes_flags' high byte. Mirror binomial.zig's
+ * FLAG_* constants. */
+#define BK_FLAG_STATIC                 (1u << 0)
+#define BK_FLAG_MONOTONIC_INCREASING   (1u << 1)
+#define BK_FLAG_MONOTONIC_DECREASING   (1u << 2)
+#define BK_FLAG_TEMPORAL_PULSE         (1u << 3)
+#define BK_FLAG_HIGH_CHROMA            (1u << 4)
+#define BK_FLAG_HIGH_LUMA              (1u << 5)
+#define BK_FLAG_LOW_LUMA               (1u << 6)
+/* bit 7 reserved */
+
 #ifdef __cplusplus
 }
 #endif
