@@ -66,7 +66,13 @@ pub const Mosaic = struct {
     backing:    []u16,       // OWNED slice allocator-allocated; free with same alloc
 };
 
-/// TIFF tags we actually consume. Numeric values are from Adobe DNG Spec 1.4.0.0.
+/// TIFF tags we actually consume. Numeric values are from Adobe DNG Spec 1.4.0.0
+/// and TIFF 6.0 spec. Two image-data layouts are supported:
+///   - Strip layout: strip_offsets (273) + strip_byte_counts (279)
+///     Used by iPhone uncompressed Bayer (Compression=1).
+///   - Tile layout:  tile_width (322) + tile_length (323)
+///                   + tile_offsets (324) + tile_byte_counts (325)
+///     Used by iPhone LJPEG-compressed Bayer (Compression=7).
 const Tag = struct {
     pub const image_width                = 256;
     pub const image_length               = 257;
@@ -76,6 +82,10 @@ const Tag = struct {
     pub const strip_offsets              = 273;
     pub const rows_per_strip             = 278;
     pub const strip_byte_counts          = 279;
+    pub const tile_width                 = 322;
+    pub const tile_length                = 323;
+    pub const tile_offsets               = 324;
+    pub const tile_byte_counts           = 325;
     pub const cfa_pattern                = 33422;
     pub const black_level                = 50714;
     pub const white_level                = 50717;
@@ -133,6 +143,10 @@ fn parseIfd0(
 
     var strip_offsets_entry: ?Entry = null;
     var strip_byte_counts_entry: ?Entry = null;
+    var tile_offsets_entry: ?Entry = null;
+    var tile_byte_counts_entry: ?Entry = null;
+    var tile_width: u32 = 0;
+    var tile_length: u32 = 0;
 
     var i: u16 = 0;
     while (i < entry_count) : (i += 1) {
@@ -158,6 +172,10 @@ fn parseIfd0(
                 strip_byte_counts_entry = e;
                 if (e.count == 1) strip_byte_counts_val = e.inlineU32(order);
             },
+            Tag.tile_width                 => tile_width = e.inlineU32(order),
+            Tag.tile_length                => tile_length = e.inlineU32(order),
+            Tag.tile_offsets               => tile_offsets_entry = e,
+            Tag.tile_byte_counts           => tile_byte_counts_entry = e,
             Tag.cfa_pattern => {
                 // CFA pattern is 4 bytes inline for type=1 BYTE count=4: R=0 G=1 B=2.
                 // Accept RGGB = [0,1,1,2] and BGGR = [2,1,1,0]. The 4 bytes sit in
@@ -204,63 +222,113 @@ fn parseIfd0(
     if (white == 0) white = (@as(u32, 1) << @intCast(bits)) - 1;
 
     const pixel_count = @as(usize, w) * @as(usize, h);
-    const so_entry = strip_offsets_entry orelse return Error.MissingTag;
-    const sbc_entry = strip_byte_counts_entry orelse return Error.MissingTag;
 
-    // Strip-data dispatch. Single-strip is the common case for both
-    // uncompressed and LJPEG-compressed iPhone DNGs.
+    // Image-data layout dispatch. iPhone DNGs use one of two layouts:
+    //   - Compression=1 (uncompressed Bayer): strip layout (StripOffsets/Counts)
+    //   - Compression=7 (LJPEG-compressed Bayer): tile layout (TileOffsets/Counts)
     var pixels: []u16 = undefined;
-    if (so_entry.count == 1 and sbc_entry.count == 1) {
-        const data_off = so_entry.inlineU32(order);
-        const data_len = sbc_entry.inlineU32(order);
-        if (bytes.len < @as(usize, data_off) + @as(usize, data_len)) return Error.ShortRead;
-        const strip = bytes[data_off..@as(usize, data_off) + @as(usize, data_len)];
+    if (tile_offsets_entry != null and tile_byte_counts_entry != null) {
+        // Tile layout. iPhone LJPEG DNGs typically have a single tile covering
+        // the whole image, but we support N tiles laid out in row-major order.
+        const to_entry = tile_offsets_entry.?;
+        const tbc_entry = tile_byte_counts_entry.?;
+        if (to_entry.count != tbc_entry.count) return Error.MissingTag;
+        if (tile_width == 0) tile_width = w;     // single-tile fallback
+        if (tile_length == 0) tile_length = h;
+        if (compression != 7) return Error.UnsupportedCompression;
 
-        switch (compression) {
-            1 => {
-                // Uncompressed mosaic — direct u16 read.
-                const single_strip_byte_count = pixel_count * 2;
-                if (data_len < single_strip_byte_count) return Error.ShortRead;
-                pixels = try allocator.alloc(u16, pixel_count);
-                errdefer allocator.free(pixels);
-                decodeMosaicU16(strip[0..single_strip_byte_count], pixels, order);
-            },
-            7 => {
-                // LJPEG SOF3 — hand the strip to ljpeg.decode and take ownership
-                // of its sample buffer.
-                var dec = ljpeg.decode(allocator, strip) catch return Error.LJPEGDecodeFailed;
-                if (dec.width != w or dec.height != h) {
-                    dec.deinit(allocator);
-                    return Error.BadDimensions;
-                }
-                pixels = dec.backing;
-                // Don't dec.deinit — we're transferring ownership of the
-                // sample buffer to the Mosaic we're about to return.
-            },
-            else => unreachable,    // compressionError() above already gates this
-        }
-    } else {
-        // Multi-strip — only supported for uncompressed today.
-        if (compression != 1) return Error.LJPEGDecodeFailed;
-        const n_strips: usize = @intCast(so_entry.count);
-        if (sbc_entry.count != so_entry.count) return Error.MissingTag;
-        if (rows_per_strip == 0) return Error.MissingTag;
+        const tiles_across = (w + tile_width - 1) / tile_width;
+        const tiles_down = (h + tile_length - 1) / tile_length;
+        const expected_tiles = tiles_across * tiles_down;
+        if (to_entry.count != expected_tiles) return Error.BadDimensions;
 
         pixels = try allocator.alloc(u16, pixel_count);
         errdefer allocator.free(pixels);
 
-        var dst_idx: usize = 0;
-        var si: usize = 0;
-        while (si < n_strips) : (si += 1) {
-            const off = try readArrayU32(bytes, so_entry, si, order);
-            const cnt = try readArrayU32(bytes, sbc_entry, si, order);
+        var ti: u32 = 0;
+        while (ti < expected_tiles) : (ti += 1) {
+            const tile_x = (ti % tiles_across) * tile_width;
+            const tile_y = (ti / tiles_across) * tile_length;
+            const off = try readArrayU32(bytes, to_entry, ti, order);
+            const cnt = try readArrayU32(bytes, tbc_entry, ti, order);
             if (bytes.len < @as(usize, off) + @as(usize, cnt)) return Error.ShortRead;
-            const dst_words = @as(usize, cnt) / 2;
-            if (dst_idx + dst_words > pixel_count) return Error.BadDimensions;
-            decodeMosaicU16(bytes[off..][0..@as(usize, cnt)], pixels[dst_idx..][0..dst_words], order);
-            dst_idx += dst_words;
+            const tile_bytes = bytes[off..@as(usize, off) + @as(usize, cnt)];
+
+            // Decode this tile's LJPEG payload.
+            var dec = ljpeg.decode(allocator, tile_bytes) catch return Error.LJPEGDecodeFailed;
+            defer dec.deinit(allocator);
+
+            // Copy decoded tile samples into the right rectangle of `pixels`.
+            // Handle the edge-tile case where the tile may overlap the image
+            // boundary (the trailing part is padding to be discarded).
+            const copy_w = @min(tile_width, w - tile_x);
+            const copy_h = @min(tile_length, h - tile_y);
+            var ry: u32 = 0;
+            while (ry < copy_h) : (ry += 1) {
+                const src_row = ry * dec.width;
+                const dst_row = (tile_y + ry) * w + tile_x;
+                @memcpy(
+                    pixels[dst_row..][0..copy_w],
+                    dec.samples[src_row..][0..copy_w],
+                );
+            }
         }
-        if (dst_idx != pixel_count) return Error.BadDimensions;
+    } else if (strip_offsets_entry != null and strip_byte_counts_entry != null) {
+        // Strip layout. Single-strip is the common case for uncompressed Bayer;
+        // multi-strip falls back to the loop below.
+        const so_entry = strip_offsets_entry.?;
+        const sbc_entry = strip_byte_counts_entry.?;
+
+        if (so_entry.count == 1 and sbc_entry.count == 1) {
+            const data_off = so_entry.inlineU32(order);
+            const data_len = sbc_entry.inlineU32(order);
+            if (bytes.len < @as(usize, data_off) + @as(usize, data_len)) return Error.ShortRead;
+            const strip = bytes[data_off..@as(usize, data_off) + @as(usize, data_len)];
+
+            switch (compression) {
+                1 => {
+                    const single_strip_byte_count = pixel_count * 2;
+                    if (data_len < single_strip_byte_count) return Error.ShortRead;
+                    pixels = try allocator.alloc(u16, pixel_count);
+                    errdefer allocator.free(pixels);
+                    decodeMosaicU16(strip[0..single_strip_byte_count], pixels, order);
+                },
+                7 => {
+                    var dec = ljpeg.decode(allocator, strip) catch return Error.LJPEGDecodeFailed;
+                    if (dec.width != w or dec.height != h) {
+                        dec.deinit(allocator);
+                        return Error.BadDimensions;
+                    }
+                    pixels = dec.backing;
+                },
+                else => unreachable,
+            }
+        } else {
+            // Multi-strip — only supported for uncompressed today.
+            if (compression != 1) return Error.LJPEGDecodeFailed;
+            const n_strips: usize = @intCast(so_entry.count);
+            if (sbc_entry.count != so_entry.count) return Error.MissingTag;
+            if (rows_per_strip == 0) return Error.MissingTag;
+
+            pixels = try allocator.alloc(u16, pixel_count);
+            errdefer allocator.free(pixels);
+
+            var dst_idx: usize = 0;
+            var si: usize = 0;
+            while (si < n_strips) : (si += 1) {
+                const off = try readArrayU32(bytes, so_entry, si, order);
+                const cnt = try readArrayU32(bytes, sbc_entry, si, order);
+                if (bytes.len < @as(usize, off) + @as(usize, cnt)) return Error.ShortRead;
+                const dst_words = @as(usize, cnt) / 2;
+                if (dst_idx + dst_words > pixel_count) return Error.BadDimensions;
+                decodeMosaicU16(bytes[off..][0..@as(usize, cnt)], pixels[dst_idx..][0..dst_words], order);
+                dst_idx += dst_words;
+            }
+            if (dst_idx != pixel_count) return Error.BadDimensions;
+        }
+    } else {
+        // Neither tile nor strip layout — DNG is malformed for our purposes.
+        return Error.MissingTag;
     }
 
     return Mosaic{

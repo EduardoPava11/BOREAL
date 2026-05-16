@@ -72,9 +72,26 @@ enum DNGProbe {
         // first 16 bytes of strip data so we can identify the stream by magic.
         if let so = entries.first(where: { $0.tag == 273 }) {
             Log.processing.info("\(label, privacy: .public) StripOffsets (273): type=\(so.type) count=\(so.count) valOff=\(so.valueOffset)")
+        } else {
+            Log.processing.info("\(label, privacy: .public) StripOffsets (273): <ABSENT>")
         }
         if let sbc = entries.first(where: { $0.tag == 279 }) {
             Log.processing.info("\(label, privacy: .public) StripByteCounts (279): type=\(sbc.type) count=\(sbc.count) valOff=\(sbc.valueOffset)")
+        } else {
+            Log.processing.info("\(label, privacy: .public) StripByteCounts (279): <ABSENT>")
+        }
+        // Tile-layout tags (Compression=7 LJPEG iPhone DNGs use these instead of strips).
+        if let tw = entries.first(where: { $0.tag == 322 }) {
+            Log.processing.info("\(label, privacy: .public) TileWidth (322): type=\(tw.type) count=\(tw.count) valOff=\(tw.valueOffset)")
+        }
+        if let tl = entries.first(where: { $0.tag == 323 }) {
+            Log.processing.info("\(label, privacy: .public) TileLength (323): type=\(tl.type) count=\(tl.count) valOff=\(tl.valueOffset)")
+        }
+        if let to = entries.first(where: { $0.tag == 324 }) {
+            Log.processing.info("\(label, privacy: .public) TileOffsets (324): type=\(to.type) count=\(to.count) valOff=\(to.valueOffset)")
+        }
+        if let tbc = entries.first(where: { $0.tag == 325 }) {
+            Log.processing.info("\(label, privacy: .public) TileByteCounts (325): type=\(tbc.type) count=\(tbc.count) valOff=\(tbc.valueOffset)")
         }
 
         // First-strip data peek: identifies JPEG (FFD8 FFE0/FFE1), Deflate (78 9C / 78 DA),
