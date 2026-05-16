@@ -8,12 +8,12 @@
 //! We only read the tags we need to extract a cropped u16 mosaic ready for binning.
 
 const std = @import("std");
+const ljpeg = @import("ljpeg.zig");
 
 pub const Error = error{
     BadTiffMagic,
     UnsupportedByteOrder,
     UnsupportedCompression,         // generic fallback
-    UnsupportedCompressionJpeg,     // 7  — baseline or lossless JPEG
     UnsupportedCompressionDeflate,  // 8
     UnsupportedCompressionLossyDNG, // 34892
     UnsupportedCompressionAppleVc8r,// 'vc8r' = 0x76633872 (Apple ProRAW / compressed Bayer)
@@ -22,16 +22,25 @@ pub const Error = error{
     MissingTag,
     BadDimensions,
     ShortRead,
+    LJPEGDecodeFailed,              // upstream LJPEG decoder rejected the strip
     OutOfMemory,
+};
+
+/// CFA pattern — declares which channel sits at each 2×2 unit-cell position.
+/// iPhone 17 Pro main wide camera ships BGGR; older iPhones / Apple ProRAW
+/// ship RGGB. The cropper and binner consume `cfa` to interpret the mosaic.
+pub const CfaPattern = enum {
+    rggb,
+    bggr,
 };
 
 /// Compression-tag dispatch. Returns the corresponding named error for known
 /// compressed schemes so callers can log "we hit JPEG, not random unsupported".
-/// `null` means "uncompressed (1) — proceed as today."
+/// `null` means "supported by parse() — uncompressed (1) or LJPEG SOF3 (7)."
 pub fn compressionError(value: u32) ?Error {
     return switch (value) {
-        1          => null,                                  // None — supported path
-        7          => Error.UnsupportedCompressionJpeg,
+        1          => null,                                  // None — uncompressed mosaic
+        7          => null,                                  // LJPEG SOF3 — handled by ljpeg.decode
         8          => Error.UnsupportedCompressionDeflate,
         34892      => Error.UnsupportedCompressionLossyDNG,
         0x76633872 => Error.UnsupportedCompressionAppleVc8r, // 'vc8r' four-CC
@@ -42,15 +51,16 @@ pub fn compressionError(value: u32) ?Error {
 pub const ByteOrder = enum { little, big };
 
 pub const Mosaic = struct {
-    width:      u32,         // full sensor width (e.g., 4032)
-    height:     u32,         // full sensor height (e.g., 3024)
+    width:      u32,         // full sensor width (4224 on iPhone 17 Pro)
+    height:     u32,         // full sensor height (3024 on iPhone 17 Pro)
     bits:       u32,         // bits per sample (14 on iPhone)
     black:      u32,         // black-level value in raw counts
     white:      u32,         // white-level value in raw counts
-    crop_x:     u32,         // DefaultCropOrigin x (e.g., 544)
-    crop_y:     u32,         // DefaultCropOrigin y (e.g.,  40)
-    crop_w:     u32,         // DefaultCropSize w   (e.g., 2944)
-    crop_h:     u32,         // DefaultCropSize h   (e.g., 2944)
+    cfa:        CfaPattern,  // .bggr on iPhone 17 Pro main wide
+    crop_x:     u32,         // DefaultCropOrigin x
+    crop_y:     u32,         // DefaultCropOrigin y
+    crop_w:     u32,         // DefaultCropSize w
+    crop_h:     u32,         // DefaultCropSize h
     samples:    []const u16, // packed row-major, length = width * height
                              // (BORROWED — backed by `backing`)
     backing:    []u16,       // OWNED slice allocator-allocated; free with same alloc
@@ -113,7 +123,7 @@ fn parseIfd0(
     var strip_offsets_val: u32 = 0;
     var rows_per_strip: u32 = 0;
     var strip_byte_counts_val: u32 = 0;
-    var cfa_ok = false;
+    var cfa_kind: ?CfaPattern = null;
     var black: u32 = 0;
     var white: u32 = 0;
     var crop_x: u32 = 0;
@@ -150,27 +160,20 @@ fn parseIfd0(
             },
             Tag.cfa_pattern => {
                 // CFA pattern is 4 bytes inline for type=1 BYTE count=4: R=0 G=1 B=2.
-                // We only accept RGGB = [0,1,1,2]. The 4 bytes sit in value_off little-end-first
-                // since they're already byte-packed (no endian swap on individual bytes).
+                // Accept RGGB = [0,1,1,2] and BGGR = [2,1,1,0]. The 4 bytes sit in
+                // value_off little-end-first since they're byte-packed (no endian
+                // swap on individual bytes within the BYTE array).
                 if (e.type == 1 and e.count == 4) {
                     const p0 = @as(u8, @truncate(e.value_off & 0xFF));
                     const p1 = @as(u8, @truncate((e.value_off >>  8) & 0xFF));
                     const p2 = @as(u8, @truncate((e.value_off >> 16) & 0xFF));
                     const p3 = @as(u8, @truncate((e.value_off >> 24) & 0xFF));
-                    if (order == .big) {
-                        // Big-endian: bytes appear in big-endian order in the value field.
-                        // For BYTE entries that's [p_msb, ..., p_lsb] but TIFF spec says
-                        // BYTE arrays are simply stored left-to-right in the 4 bytes; the
-                        // byte order swap only affects multi-byte values. So in BE files,
-                        // reading the value as u32 LE-style and extracting bytes works for
-                        // BYTE entries only when we know the layout. To stay safe, also
-                        // accept the reversed pattern.
-                        const rev_ok = (p3 == 0 and p2 == 1 and p1 == 1 and p0 == 2);
-                        const fwd_ok = (p0 == 0 and p1 == 1 and p2 == 1 and p3 == 2);
-                        if (rev_ok or fwd_ok) cfa_ok = true;
-                    } else {
-                        if (p0 == 0 and p1 == 1 and p2 == 1 and p3 == 2) cfa_ok = true;
-                    }
+                    // Try both byte orders for big-endian DNGs (TIFF spec leaves
+                    // BYTE-array layout ambiguous in BE files).
+                    if (p0 == 0 and p1 == 1 and p2 == 1 and p3 == 2) cfa_kind = .rggb;
+                    if (p3 == 0 and p2 == 1 and p1 == 1 and p0 == 2) cfa_kind = .rggb;
+                    if (p0 == 2 and p1 == 1 and p2 == 1 and p3 == 0) cfa_kind = .bggr;
+                    if (p3 == 2 and p2 == 1 and p1 == 1 and p0 == 0) cfa_kind = .bggr;
                 }
             },
             Tag.black_level => black = try readUintAt(bytes, e, order),
@@ -193,36 +196,58 @@ fn parseIfd0(
     if (bits != 14 and bits != 16) return Error.UnsupportedBitDepth;
     if (compressionError(compression)) |comp_err| return comp_err;
     if (photometric != CFA_PHOTOMETRIC) return Error.UnsupportedCfaPattern;
-    if (!cfa_ok) return Error.UnsupportedCfaPattern;
+    const cfa = cfa_kind orelse return Error.UnsupportedCfaPattern;
     if (crop_w == 0 or crop_h == 0) return Error.MissingTag;
 
     // Default sensible black/white if DNG omitted them.
     if (black == 0 and bits == 14) black = 528;     // iPhone 17 Pro typical
     if (white == 0) white = (@as(u32, 1) << @intCast(bits)) - 1;
 
-    // Read pixel data: single-strip is the common case. Multi-strip is also supported
-    // by concatenating rows_per_strip * strip_index offsets, but iPhone DNGs ship a
-    // single strip covering the whole mosaic.
     const pixel_count = @as(usize, w) * @as(usize, h);
-    var pixels = try allocator.alloc(u16, pixel_count);
-    errdefer allocator.free(pixels);
-
-    const single_strip_byte_count = @as(usize, w) * @as(usize, h) * 2;
     const so_entry = strip_offsets_entry orelse return Error.MissingTag;
     const sbc_entry = strip_byte_counts_entry orelse return Error.MissingTag;
 
+    // Strip-data dispatch. Single-strip is the common case for both
+    // uncompressed and LJPEG-compressed iPhone DNGs.
+    var pixels: []u16 = undefined;
     if (so_entry.count == 1 and sbc_entry.count == 1) {
-        // Single strip.
         const data_off = so_entry.inlineU32(order);
         const data_len = sbc_entry.inlineU32(order);
-        if (data_len < single_strip_byte_count) return Error.ShortRead;
-        if (bytes.len < @as(usize, data_off) + single_strip_byte_count) return Error.ShortRead;
-        decodeMosaicU16(bytes[data_off..][0..single_strip_byte_count], pixels, order);
+        if (bytes.len < @as(usize, data_off) + @as(usize, data_len)) return Error.ShortRead;
+        const strip = bytes[data_off..@as(usize, data_off) + @as(usize, data_len)];
+
+        switch (compression) {
+            1 => {
+                // Uncompressed mosaic — direct u16 read.
+                const single_strip_byte_count = pixel_count * 2;
+                if (data_len < single_strip_byte_count) return Error.ShortRead;
+                pixels = try allocator.alloc(u16, pixel_count);
+                errdefer allocator.free(pixels);
+                decodeMosaicU16(strip[0..single_strip_byte_count], pixels, order);
+            },
+            7 => {
+                // LJPEG SOF3 — hand the strip to ljpeg.decode and take ownership
+                // of its sample buffer.
+                var dec = ljpeg.decode(allocator, strip) catch return Error.LJPEGDecodeFailed;
+                if (dec.width != w or dec.height != h) {
+                    dec.deinit(allocator);
+                    return Error.BadDimensions;
+                }
+                pixels = dec.backing;
+                // Don't dec.deinit — we're transferring ownership of the
+                // sample buffer to the Mosaic we're about to return.
+            },
+            else => unreachable,    // compressionError() above already gates this
+        }
     } else {
-        // Multi-strip — concatenate.
+        // Multi-strip — only supported for uncompressed today.
+        if (compression != 1) return Error.LJPEGDecodeFailed;
         const n_strips: usize = @intCast(so_entry.count);
         if (sbc_entry.count != so_entry.count) return Error.MissingTag;
         if (rows_per_strip == 0) return Error.MissingTag;
+
+        pixels = try allocator.alloc(u16, pixel_count);
+        errdefer allocator.free(pixels);
 
         var dst_idx: usize = 0;
         var si: usize = 0;
@@ -244,6 +269,7 @@ fn parseIfd0(
         .bits    = bits,
         .black   = black,
         .white   = white,
+        .cfa     = cfa,
         .crop_x  = crop_x,
         .crop_y  = crop_y,
         .crop_w  = crop_w,

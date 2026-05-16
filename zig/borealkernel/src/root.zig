@@ -14,6 +14,7 @@ const std = @import("std");
 pub const dng    = @import("dng.zig");
 pub const kernel = @import("kernel.zig");
 pub const bayer  = @import("bayer.zig");
+pub const ljpeg  = @import("ljpeg.zig");
 
 /// Status codes — matches `bk_status_t` enum in BorealKernel.h.
 pub const Status = enum(c_int) {
@@ -30,10 +31,10 @@ pub const Status = enum(c_int) {
     crop_too_small                    = 10,
     bad_crop_origin                   = 11,
     allocation_failed                 = 12,
-    unsupported_compression_jpeg      = 13,
     unsupported_compression_deflate   = 14,
     unsupported_compression_lossy_dng = 15,
     unsupported_compression_apple_vc8r= 16,
+    ljpeg_decode_failed               = 17,
 };
 
 /// Single entry point. Parses `dng_bytes`, bins the cropped 2944×2944 RGGB
@@ -73,7 +74,6 @@ fn statusFromDngError(err: dng.Error) c_int {
         dng.Error.BadTiffMagic                    => Status.bad_tiff_magic,
         dng.Error.UnsupportedByteOrder            => Status.unsupported_byte_order,
         dng.Error.UnsupportedCompression          => Status.unsupported_compression,
-        dng.Error.UnsupportedCompressionJpeg      => Status.unsupported_compression_jpeg,
         dng.Error.UnsupportedCompressionDeflate   => Status.unsupported_compression_deflate,
         dng.Error.UnsupportedCompressionLossyDNG  => Status.unsupported_compression_lossy_dng,
         dng.Error.UnsupportedCompressionAppleVc8r => Status.unsupported_compression_apple_vc8r,
@@ -82,6 +82,7 @@ fn statusFromDngError(err: dng.Error) c_int {
         dng.Error.MissingTag                      => Status.missing_tag,
         dng.Error.BadDimensions                   => Status.bad_dimensions,
         dng.Error.ShortRead                       => Status.short_read,
+        dng.Error.LJPEGDecodeFailed               => Status.ljpeg_decode_failed,
         dng.Error.OutOfMemory                     => Status.allocation_failed,
     });
 }

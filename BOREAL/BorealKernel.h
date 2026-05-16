@@ -29,10 +29,11 @@ typedef enum {
     BK_CROP_TOO_SMALL                        = 10,
     BK_BAD_CROP_ORIGIN                       = 11,
     BK_ALLOCATION_FAILED                     = 12,
-    BK_UNSUPPORTED_COMPRESSION_JPEG          = 13,  /* Compression == 7 */
+    /* 13 reserved (was BK_UNSUPPORTED_COMPRESSION_JPEG; now supported) */
     BK_UNSUPPORTED_COMPRESSION_DEFLATE       = 14,  /* Compression == 8 */
     BK_UNSUPPORTED_COMPRESSION_LOSSY_DNG     = 15,  /* Compression == 34892 */
     BK_UNSUPPORTED_COMPRESSION_APPLE_VC8R    = 16,  /* Compression == 'vc8r' */
+    BK_LJPEG_DECODE_FAILED                   = 17,  /* Compression == 7 but ljpeg.decode rejected */
 } bk_status_t;
 
 // Bin one DNG into a 64*64*4 = 16384 byte RGBA8 buffer.
