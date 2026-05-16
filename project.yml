@@ -52,6 +52,29 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
         MTL_FAST_MATH: YES
+        # Zig kernel integration. The pre-build phase below produces
+        # libborealkernel.a per (platform, arch) under
+        #   zig/borealkernel/zig-out/<triple>/lib/
+        # The bridging header exposes BorealKernel.h to Swift.
+        SWIFT_OBJC_BRIDGING_HEADER: BOREAL/BOREAL-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/BOREAL
+        # Per-SDK library search paths so the simulator build doesn't
+        # accidentally pick up the device's aarch64-ios .a (which would
+        # surface as a misleading "not 8-byte aligned" linker error).
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(SRCROOT)/zig/borealkernel/zig-out/aarch64-ios/lib
+        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]":
+          - $(SRCROOT)/zig/borealkernel/zig-out/aarch64-ios-simulator/lib
+        OTHER_LDFLAGS:
+          - -lborealkernel
+    preBuildScripts:
+      - name: "Build Zig kernel (libborealkernel.a)"
+        script: |
+          "${SRCROOT}/scripts/build-zig.sh"
+        outputFiles:
+          - "$(SRCROOT)/zig/borealkernel/zig-out/$(EFFECTIVE_PLATFORM_NAME:c=)/lib/libborealkernel.a"
+        basedOnDependencyAnalysis: false   # always run; Zig handles its own caching
 
   BOREALTests:
     type: bundle.unit-test
