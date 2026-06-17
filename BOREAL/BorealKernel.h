@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,6 +70,14 @@ typedef struct {
     uint32_t          crop_origin_y;
     uint32_t          crop_size_w;
     uint32_t          crop_size_h;
+    float             wb_r;        /* AsShotNeutral WB multipliers, green-normalized */
+    float             wb_g;        /* (= 1); feeds bk_solve_ettr_exposures' WB prior */
+    float             wb_b;
+    float             exposure_time; /* EXIF ExposureTime (s); 0 = absent */
+    float             iso;           /* EXIF ISO; 0 = absent */
+    float             fnumber;       /* EXIF FNumber; 0 = absent */
+    float             cam_to_pp[9];  /* camera-native → ProPhoto-linear 3×3 (row-major) */
+    bool              has_color;     /* false → cam_to_pp is identity, embed no ICC */
     uint16_t         *samples;     /* heap, length = width * height */
 } bk_mosaic_t;
 
@@ -96,7 +105,179 @@ int bk_decode_dng_to_mosaic(
  * mosaic with samples == null (e.g., after a failed decode). */
 void bk_free_mosaic(bk_mosaic_t *mosaic);
 
-/* Per-bin binomial encode for one set's 4 LAB frames.
+/* ── Stage A/B: pre-shutter scene analysis + exposure planning ──────────────
+ * RGBT → HDR pivot (see BOREAL-RGBT-HDR-WORKFLOW.md §1). ANALYZE → PLAN. */
+
+/* Per-channel ETTR headroom for the current scene. Mirror of scene.SceneClips.
+ * room_* = stops to push that channel's bright tail to ~95% of clip (green is
+ * normally smallest — it saturates first); 0 for an absent channel. */
+typedef struct {
+    float room_r;
+    float room_g;
+    float room_b;
+    float shadow_depth;   /* extra stops, beyond green-ETTR, for the shadow frame */
+    bool  present_r;      /* channel carries real signal (bright tail ≥ floor) */
+    bool  present_g;
+    bool  present_b;
+} bk_scene_clips_t;
+
+/* The 4-frame exposure plan: EV offsets (stops) from the base preview exposure,
+ * applied via shutter only. Mirror of scene.ExposurePlan. */
+typedef struct {
+    float ev_green;   /* f1 — green ETTR  */
+    float ev_red;     /* f2 — red ETTR    */
+    float ev_blue;    /* f3 — blue ETTR   */
+    float ev_shadow;  /* f4 — shadow floor */
+} bk_exposure_plan_t;
+
+/* Stage A. Analyze an interleaved RGB frame (3 floats/pixel, normalized [0,1];
+ * supply UniWB data so per-channel tails reflect raw, not WB-scaled, levels).
+ * Caller owns both buffers. */
+void bk_analyze_scene(const float *rgb, uint32_t width, uint32_t height, bk_scene_clips_t *out);
+
+/* Stage B. SceneClips + white-balance prior wb_mult[3] = {R,G,B} → 4-frame plan.
+ * Present channels use their measured room; absent channels fall back to the WB
+ * prior (Δ = log2(wb_c/wb_g)). extra_shadow adds stops to the shadow frame. */
+void bk_solve_ettr_exposures(const bk_scene_clips_t *clips, const float *wb_mult, float extra_shadow, bk_exposure_plan_t *out);
+
+/* Per-frame exposure read-out. Bin a RAW Bayer mosaic (u16 samples, length
+ * width*height) into three per-channel display histograms: green at the two
+ * off-diagonal CFA sites, red/blue at the corners (swapped for BGGR). Values
+ * are normalized by black/white with NO white balance, so the bars show true
+ * per-channel exposure — a tail in the top bin means that channel clipped.
+ * cfa: 0 = RGGB, 1 = BGGR. Each out_* buffer must hold n_bins uint32_t. */
+void bk_channel_histograms(
+    const uint16_t *samples,
+    uint32_t        width,
+    uint32_t        height,
+    uint32_t        cfa,
+    float           black,
+    float           white,
+    uint32_t        n_bins,
+    uint32_t       *out_r,
+    uint32_t       *out_g,
+    uint32_t       *out_b
+);
+
+/* Live preview exposure read-out. Bin an interleaved 8-bit BGRA video frame (the
+ * live AVCaptureVideoDataOutput feed) into three per-channel display histograms.
+ * Each channel is normalized by /255 — display-referred 8-bit, so there is NO
+ * sensor black/white level and NO white balance (unlike bk_channel_histograms);
+ * this is a relative pre-shutter exposure guide, not comparable in absolute terms
+ * to the RAW per-frame histograms. row_stride is the buffer's bytesPerRow IN
+ * BYTES (a CVPixelBuffer pads each row past width*4 — stride by this, not
+ * width*4). Byte order is BGRA: B at offset o, G at o+1, R at o+2, A skipped.
+ * Each out_* buffer must hold n_bins uint32_t; all three are zeroed first. */
+void bk_rgb_histograms(
+    const uint8_t *bgra,
+    uint32_t       width,
+    uint32_t       height,
+    uint32_t       row_stride,
+    uint32_t       n_bins,
+    uint32_t      *out_r,
+    uint32_t      *out_g,
+    uint32_t      *out_b
+);
+
+/* ── Stage D: RGBT scene-linear fusion (see WORKFLOW §2) ────────────────────
+ * Owned algorithm. Mirror of fuse.FuseParams. */
+typedef struct {
+    float black;          /* sensor black level (raw code) */
+    float white;          /* sensor saturation level (raw code) */
+    float exposures[4];   /* per-frame relative exposure ratio e_t */
+    float knee;           /* normalized level where saturation rolloff begins (≈0.90) */
+    float clip;           /* normalized level where weight reaches 0 (≈0.98) */
+} bk_fuse_params_t;
+
+/* Fuse 4 raw frames (u16, each length n) into one scene-linear f32 buffer.
+ * out must hold ≥ n floats. Channel-agnostic, saturation+SNR weighted. */
+void bk_fuse_mosaics(
+    const uint16_t *f0,
+    const uint16_t *f1,
+    const uint16_t *f2,
+    const uint16_t *f3,
+    size_t          n,
+    const bk_fuse_params_t *params,
+    float          *out
+);
+
+/* Compute per-frame relative exposure ratios e_t from each frame's EXIF
+ * (ExposureTime/ISO/FNumber, 0 = absent). Single source of truth for
+ * direction/normalization/fallback/clamp. out[t] in [1.0, 32.0], darkest = 1.0.
+ * Returns {1,1,1,1} when there is no usable bracket. */
+void bk_relative_exposures(const float et[4], const float iso[4], const float fnum[4], float out[4]);
+
+/* ── Output B: owned 64³ .cube LUT baker (see WORKFLOW §4) ──────────────────
+ * ASC-CDL grade. Mirror of lut.LookParams. */
+typedef struct {
+    float slope[3];   /* per-channel gain   */
+    float offset[3];  /* per-channel lift   */
+    float power[3];   /* per-channel gamma  */
+    float luma_w[3];  /* luminance weights for the saturation mix */
+    float sat;        /* saturation (1 = identity) */
+} bk_look_params_t;
+
+/* Bake the look into a grid^3 * 3 interleaved RGB lattice (red fastest).
+ * out must hold grid*grid*grid*3 floats. Use grid = 64 for Photoshop. */
+void bk_build_cube_lut(const bk_look_params_t *params, uint32_t grid, float *out);
+
+/* Serialize a baked lattice as Adobe/Resolve .cube text into buf. Returns bytes
+ * written, or 0 if buf is too small. */
+size_t bk_emit_cube(const float *lattice, uint32_t grid, uint8_t *buf, size_t buf_len);
+
+/* Apply the SAME ASC-CDL look the cube bakes to an interleaved RGB f32 buffer of
+ * n_px pixels, in place ([0,1] display-referred). Used to make the on-screen
+ * preview match the exported .cube exactly (★preview≡cube). */
+void bk_apply_look(float *rgb, size_t n_px, const bk_look_params_t *params);
+
+/* ── Phase 1: full-resolution demosaic (see WORKFLOW §2) ────────────────────
+ * Malvar–He–Cutler high-quality linear demosaic. Input: single-channel fused
+ * scene-linear mosaic. cfa: 0 = RGGB, 1 = BGGR. out holds w*h*3 floats. */
+void bk_demosaic_full(const float *m, uint32_t width, uint32_t height, uint32_t cfa, float *out);
+
+/* ── Colour transform: camera-native → ProPhoto linear (see WORKFLOW §3) ─────
+ * Apply the mosaic's cam_to_pp 3×3 (row-major) to an interleaved RGB f32 buffer
+ * of n_px pixels, in place. Negatives clamp to 0; HDR highlights (>1) kept. */
+void bk_apply_color_matrix(float *rgb, size_t n_px, const float *matrix);
+
+/* ── Output A: owned 32-bit-float HDR TIFF encoder (see WORKFLOW §3) ────────
+ * Baseline little-endian RGB TIFF, SampleFormat=IEEE-float, single strip. */
+
+/* Bytes needed for a width×height float-RGB TIFF with an icc_len-byte ICC. */
+size_t bk_tiff_size(uint32_t width, uint32_t height, size_t icc_len);
+
+/* Encode a 32-bit-float RGB TIFF into buf. pixels = interleaved RGB,
+ * length >= width*height*3. icc may be NULL (icc_len 0). Returns bytes
+ * written, or 0 if buf is too small. */
+size_t bk_write_tiff_f32(
+    uint32_t       width,
+    uint32_t       height,
+    const float   *pixels,
+    const uint8_t *icc,
+    size_t         icc_len,
+    uint8_t       *buf,
+    size_t         buf_len
+);
+
+/* v4 per-set trailer scalars, mirror of binomial.PerSetTrailer in Zig.
+ * Populated by bk_binomial_encode_set and packed into the .bvox trailer's
+ * reserved bytes by the VoxelPack writer. */
+typedef struct {
+    float rho1_L;             /* global lag-1 horizontal autocorr of L_mean */
+    float rho1_a;
+    float rho1_b;
+    float kl_L_to_gaussian;   /* KL of L_mean histogram vs N(μ, σ²) */
+} bk_per_set_trailer_t;
+
+/* v4 per-session slow-scale scalars, mirror of binomial.SlowScalars in Zig. */
+typedef struct {
+    float slow_rho1_L;
+    float slow_rho1_a;
+    float slow_rho1_b;
+    float nu_L;               /* σ²_between / σ²_total (Theorem 6 Ch.1) */
+} bk_slow_scalars_t;
+
+/* Per-bin binomial encode for one set's 4 LAB frames (v4 ABI).
  *
  * lab_frames: pointer to 4 × 64*64*3 = 49,152 floats, laid out as
  *   [frame0_lab_interleaved, frame1, frame2, frame3].
@@ -106,7 +287,27 @@ void bk_free_mosaic(bk_mosaic_t *mosaic);
  *   bits  0..7   = L_code (256 base-4 quantization patterns)
  *   bits  8..15  = a_code
  *   bits 16..23  = b_code
- *   bits 24..31  = flags (precomputed predicates) */
+ *   bits 24..31  = flags (precomputed predicates, see BK_FLAG_*)
+ * col_{L,a,b}_shape layout per bin (v3 SHAPE descriptor):
+ *   bits  0..7   = sigma_q8    — σ × 2, 0.5 LSB on channel scale
+ *   bits  8..15  = gamma3_s8   — skewness γ₃ × 64, signed i8
+ *   bits 16..23  = gamma4_s8   — excess kurtosis γ₄ × 32, signed i8
+ *   bits 24..29  = chi2_u6     — χ² to Bin(3, 0.5) × 2, clamped 0..63
+ *   bits 30..31  = shape_class — 0=SYMMETRIC, 1=LEFT_SKEW, 2=RIGHT_SKEW, 3=BIMODAL
+ *
+ * v4 columns:
+ *   col_fast_cov_La/Lb/ab — per-bin cross-channel covariance over 4 frames
+ *   col_fast_nbr_rho_*    — per-bin 4-neighbor spatial autocorrelation
+ *   col_fast_motion       — per-bin ‖LAB[frame3] - LAB[frame0]‖ Euclidean drift */
+/* User-chosen 4-frame central-tendency estimator. Default (0) =
+ * arithmetic mean, byte-identical to v4 behavior. */
+typedef enum {
+    BK_COMBINER_MEAN                       = 0u,
+    BK_COMBINER_MEDIAN                     = 1u,
+    BK_COMBINER_INVERSE_VARIANCE_WEIGHTED  = 2u,
+    BK_COMBINER_TRIMMED_MEAN               = 3u,
+} bk_combiner_t;
+
 int bk_binomial_encode_set(
     const float *lab_frames,
     float       *col_L_min,
@@ -118,7 +319,41 @@ int bk_binomial_encode_set(
     float       *col_b_min,
     float       *col_b_max,
     float       *col_b_mean,
-    uint32_t    *col_codes_flags
+    uint32_t    *col_codes_flags,
+    uint32_t    *col_L_shape,
+    uint32_t    *col_a_shape,
+    uint32_t    *col_b_shape,
+    float       *col_fast_cov_La,
+    float       *col_fast_cov_Lb,
+    float       *col_fast_cov_ab,
+    float       *col_fast_nbr_rho_L,
+    float       *col_fast_nbr_rho_a,
+    float       *col_fast_nbr_rho_b,
+    float       *col_fast_motion,
+    bk_per_set_trailer_t *out_trailer,
+    uint32_t     combiner   /* bk_combiner_t — 0=mean is v4-compatible */
+);
+
+/* v4 slow-scale fold across 16 sets' per-bin channel-mean grids. Inputs:
+ * 16 pointers to L_mean grids, 16 to a_mean, 16 to b_mean (each 4096
+ * floats). Outputs: 10 per-bin slow columns + 4 session-level scalars.
+ * Same statistical pipeline as the fast scale, just N=16 (instead of N=4)
+ * and per-session (instead of per-set). Stored in the .bcube SLOW block. */
+int bk_slow_fold_session(
+    const float * const *L_means_ptrs,    /* 16 × float* (L_mean grids) */
+    const float * const *a_means_ptrs,
+    const float * const *b_means_ptrs,
+    float       *out_slow_L_mean,
+    float       *out_slow_a_mean,
+    float       *out_slow_b_mean,
+    float       *out_slow_L_var,
+    float       *out_slow_a_var,
+    float       *out_slow_b_var,
+    float       *out_slow_cov_La,
+    float       *out_slow_cov_Lb,
+    float       *out_slow_cov_ab,
+    float       *out_slow_motion,
+    bk_slow_scalars_t *out_scalars
 );
 
 /* Flag bits packed into col_codes_flags' high byte. Mirror binomial.zig's
@@ -130,7 +365,13 @@ int bk_binomial_encode_set(
 #define BK_FLAG_HIGH_CHROMA            (1u << 4)
 #define BK_FLAG_HIGH_LUMA              (1u << 5)
 #define BK_FLAG_LOW_LUMA               (1u << 6)
-/* bit 7 reserved */
+#define BK_FLAG_BEAUTY                 (1u << 7)  /* L.chi2 < 4 — close to Bin(3, 0.5) */
+
+/* Shape-class enum values stored in col_*_shape bits 30..31. */
+#define BK_SHAPE_SYMMETRIC   0u
+#define BK_SHAPE_LEFT_SKEW   1u
+#define BK_SHAPE_RIGHT_SKEW  2u
+#define BK_SHAPE_BIMODAL     3u
 
 #ifdef __cplusplus
 }

@@ -1,14 +1,15 @@
-//! TIFF/DNG parser scoped to what BOREAL writes: uncompressed 16-bit RGGB Bayer.
+//! TIFF/DNG parser for NAKED Bayer RAW (the raw CFA sensor mosaic) — 14/16-bit,
+//! RGGB or BGGR, with the raw mosaic in IFD0 (not a SubIFD, unlike Adobe DNGs).
+//! Accepts Compression=1 (uncompressed strips) AND Compression=7 (LJPEG SOF3
+//! tiles, as iPhone Bayer RAW ships); rejects Apple-processed ProRAW variants
+//! (Linear/demosaiced, 'vc8r' compressed Bayer, lossy DNG, deflate).
 //!
-//! Apple's iPhone Bayer RAW DNGs are big-endian (`MM\0*`); the raw mosaic lives
-//! in IFD0 (not a SubIFD, unlike Adobe-style DNGs). Compression is always 1 (none).
-//! See ~/BOREAL/BOREAL/Processing/DNGCropTagEditor.swift for the Swift companion
-//! that writes the crop tags this parser consumes.
-//!
-//! We only read the tags we need to extract a cropped u16 mosaic ready for binning.
+//! Apple's iPhone Bayer RAW DNGs are big-endian (`MM\0*`). We read only the tags
+//! needed to extract the cropped u16 mosaic + colour/exposure metadata.
 
 const std = @import("std");
 const ljpeg = @import("ljpeg.zig");
+const color = @import("color.zig");
 
 pub const Error = error{
     BadTiffMagic,
@@ -75,6 +76,24 @@ pub const Mosaic = struct {
     crop_y:     u32,         // DefaultCropOrigin y
     crop_w:     u32,         // DefaultCropSize w
     crop_h:     u32,         // DefaultCropSize h
+    // White-balance multipliers from AsShotNeutral, normalized so green = 1
+    // (wb_c = asn_green / asn_c). Feeds the ETTR planner's WB prior. Defaults
+    // to 1,1,1 (neutral) when AsShotNeutral is absent/unreadable — safe, since
+    // live scene analysis overrides the prior anyway.
+    wb_r:       f32,
+    wb_g:       f32,
+    wb_b:       f32,
+    // Per-frame EXIF exposure metadata (from the EXIF SubIFD, tag 34665). Used by
+    // fuse.relativeExposures to align EV-bracketed frames. 0 = absent sentinel.
+    exposure_time: f32,     // ExposureTime (33434), seconds; 0 = absent
+    iso:           f32,     // ISO (34855); 0 = absent
+    fnumber:       f32,     // FNumber (33437); 0 = absent/canceling
+    // Row-major 3×3 mapping camera-native linear RGB → ProPhoto linear RGB
+    // (WB · ForwardMatrix · XYZ→ProPhoto, composed in color.zig). Identity and
+    // has_color=false when no usable colour matrix is present → caller leaves the
+    // image camera-native and embeds no ICC (honest, not mis-tagged).
+    cam_to_pp:  [9]f32,
+    has_color:  bool,
     samples:    []const u16, // packed row-major, length = width * height
                              // (BORROWED — backed by `backing`)
     backing:    []u16,       // OWNED slice allocator-allocated; free with same alloc
@@ -105,6 +124,13 @@ const Tag = struct {
     pub const white_level                = 50717;
     pub const default_crop_origin        = 50719;
     pub const default_crop_size          = 50720;
+    pub const as_shot_neutral            = 50728;  // RATIONAL[3] — capture white balance
+    pub const exif_ifd_pointer           = 34665;  // LONG → EXIF SubIFD offset
+    pub const exposure_time              = 33434;  // RATIONAL seconds
+    pub const fnumber                    = 33437;  // RATIONAL
+    pub const iso                        = 34855;  // SHORT/LONG ISOSpeedRatings
+    pub const color_matrix_1             = 50721;  // SRATIONAL[9] — XYZ(D65)→camera
+    pub const forward_matrix_1           = 50964;  // SRATIONAL[9] — camera→XYZ(D50)
 };
 
 const CFA_PHOTOMETRIC = 32803;
@@ -154,6 +180,12 @@ fn parseIfd0(
     var crop_y: u32 = 0;
     var crop_w: u32 = 0;
     var crop_h: u32 = 0;
+    var wb_r: f32 = 1.0;
+    const wb_g: f32 = 1.0; // green is the reference; never reassigned
+    var wb_b: f32 = 1.0;
+    var exif_ifd_off: u32 = 0; // EXIF SubIFD offset (tag 34665), parsed after IFD0
+    var forward_matrix: ?[9]f32 = null; // camera→XYZ(D50), preferred
+    var color_matrix: ?[9]f32 = null;   // XYZ(D65)→camera, inverse used as fallback
 
     var strip_offsets_entry: ?Entry = null;
     var strip_byte_counts_entry: ?Entry = null;
@@ -220,7 +252,58 @@ fn parseIfd0(
                 crop_w = vals[0];
                 crop_h = vals[1];
             },
+            Tag.as_shot_neutral => {
+                // RATIONAL[3] camera-neutral. WB multiplier = green/channel so a
+                // channel that is darker in raw (smaller neutral coord) gets a
+                // larger multiplier. Unreadable → leave neutral (1,1,1).
+                if (readRational3(bytes, e, order)) |asn| {
+                    const g = if (asn[1] > 1.0e-6) asn[1] else 1.0;
+                    if (asn[0] > 1.0e-6) wb_r = g / asn[0];
+                    if (asn[2] > 1.0e-6) wb_b = g / asn[2];
+                    // wb_g stays 1 (green is the reference)
+                } else |_| {}
+            },
+            // The SubIFD pointer can appear in any entry order, so just record the
+            // offset here and parse the SubIFD after the IFD0 loop closes.
+            Tag.exif_ifd_pointer => exif_ifd_off = e.inlineU32(order),
+            // Colour matrices (SRATIONAL[9]). ForwardMatrix is preferred (it maps
+            // camera→XYZ at D50 directly); ColorMatrix is the inverse-fallback.
+            // Unreadable → leave null → camera-native passthrough downstream.
+            Tag.forward_matrix_1 => forward_matrix = readSRational9(bytes, e, order) catch null,
+            Tag.color_matrix_1   => color_matrix = readSRational9(bytes, e, order) catch null,
             else => {},
+        }
+    }
+
+    // ── EXIF SubIFD pass (additive; never errors — leaves 0 sentinels) ──
+    var exposure_time: f32 = 0;
+    var iso: f32 = 0;
+    var fnumber: f32 = 0;
+    if (exif_ifd_off != 0 and bytes.len >= @as(usize, exif_ifd_off) + 2) {
+        const ec = readU16(bytes, exif_ifd_off, order);
+        const eb: usize = @as(usize, exif_ifd_off) + 2;
+        if (bytes.len >= eb + @as(usize, ec) * 12) {
+            var j: u16 = 0;
+            while (j < ec) : (j += 1) {
+                const eoff = eb + @as(usize, j) * 12;
+                const ee = Entry{
+                    .tag       = readU16(bytes, eoff,     order),
+                    .type      = readU16(bytes, eoff + 2, order),
+                    .count     = readU32(bytes, eoff + 4, order),
+                    .value_off = readU32(bytes, eoff + 8, order),
+                };
+                switch (ee.tag) {
+                    Tag.exposure_time => exposure_time = readRational1(bytes, ee, order),
+                    Tag.fnumber       => fnumber = readRational1(bytes, ee, order),
+                    // ISOSpeedRatings is SHORT/LONG and MAY have count>1 (the
+                    // array is then stored out-of-line). readUintAt reads the
+                    // first element in- or out-of-line with bounds + type guard;
+                    // plain inlineU32 would return value_off (a FILE OFFSET) for
+                    // count>1, decoding a bogus ISO. Unreadable → 0 absent sentinel.
+                    Tag.iso           => iso = @floatFromInt(readUintAt(bytes, ee, order) catch 0),
+                    else => {},
+                }
+            }
         }
     }
 
@@ -234,6 +317,22 @@ fn parseIfd0(
     // Default sensible black/white if DNG omitted them.
     if (black == 0 and bits == 14) black = 528;     // iPhone 17 Pro typical
     if (white == 0) white = (@as(u32, 1) << @intCast(bits)) - 1;
+
+    // Compose the camera-native → ProPhoto-linear matrix. Prefer ForwardMatrix
+    // (camera→XYZ D50); else invert ColorMatrix (XYZ→camera) as a fallback; else
+    // leave camera-native (has_color=false → caller embeds no ICC, no mis-tag).
+    const wb3 = [3]f32{ wb_r, wb_g, wb_b };
+    var cam_to_pp = [9]f32{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    var has_color = false;
+    if (forward_matrix) |fm| {
+        cam_to_pp = color.cameraToProPhoto(fm, wb3);
+        has_color = true;
+    } else if (color_matrix) |cm| {
+        if (color.invert3(cm)) |cam_to_xyz| {
+            cam_to_pp = color.cameraToProPhoto(cam_to_xyz, wb3);
+            has_color = true;
+        }
+    }
 
     const pixel_count = @as(usize, w) * @as(usize, h);
 
@@ -372,6 +471,14 @@ fn parseIfd0(
         .crop_y  = crop_y,
         .crop_w  = crop_w,
         .crop_h  = crop_h,
+        .wb_r    = wb_r,
+        .wb_g    = wb_g,
+        .wb_b    = wb_b,
+        .exposure_time = exposure_time,
+        .iso     = iso,
+        .fnumber = fnumber,
+        .cam_to_pp = cam_to_pp,
+        .has_color = has_color,
         .samples = pixels,
         .backing = pixels,
     };
@@ -496,6 +603,52 @@ fn readUintPair(bytes: []const u8, e: Entry, order: ByteOrder) Error![2]u32 {
     }
 }
 
+/// Read a single RATIONAL value as f32. RATIONAL is always out-of-line (8 bytes).
+/// Returns 0 (sentinel, NOT error/optional) on any unreadable condition so the
+/// EXIF pass stays fully graceful. MUST be used for ExposureTime/FNumber instead
+/// of readUintAt, which integer-divides (flooring e.g. 1/250 → 0).
+fn readRational1(bytes: []const u8, e: Entry, order: ByteOrder) f32 {
+    if (e.type != 5 or e.count < 1) return 0;
+    const base = e.value_off; // RATIONAL always out-of-line
+    if (bytes.len < @as(usize, base) + 8) return 0;
+    const num = readU32(bytes, base, order);
+    const den = readU32(bytes, base + 4, order);
+    if (den == 0) return 0;
+    return @as(f32, @floatFromInt(num)) / @as(f32, @floatFromInt(den));
+}
+
+/// Read a count-3 RATIONAL tag (e.g., AsShotNeutral) as three f32 ratios.
+/// Always out-of-line (3 rationals = 24 bytes).
+fn readRational3(bytes: []const u8, e: Entry, order: ByteOrder) Error![3]f32 {
+    if (e.count != 3 or e.type != 5) return Error.MissingTag;
+    const base = e.value_off;
+    if (bytes.len < @as(usize, base) + 24) return Error.ShortRead;
+    var out: [3]f32 = undefined;
+    inline for (0..3) |k| {
+        const num = readU32(bytes, base + k * 8, order);
+        const den = readU32(bytes, base + k * 8 + 4, order);
+        out[k] = if (den == 0) 0 else @as(f32, @floatFromInt(num)) / @as(f32, @floatFromInt(den));
+    }
+    return out;
+}
+
+/// Read a count-9 SRATIONAL tag (ColorMatrix1 / ForwardMatrix1) as a row-major
+/// [9]f32. SRATIONAL = signed LONG num / signed LONG den; 9 of them = 72 bytes,
+/// always out-of-line. Returns an error (caught to null by the caller) on any
+/// unreadable condition so a malformed matrix degrades to camera-native.
+fn readSRational9(bytes: []const u8, e: Entry, order: ByteOrder) Error![9]f32 {
+    if (e.count != 9 or e.type != 10) return Error.MissingTag;
+    const base = e.value_off;
+    if (bytes.len < @as(usize, base) + 72) return Error.ShortRead;
+    var out: [9]f32 = undefined;
+    inline for (0..9) |k| {
+        const num: i32 = @bitCast(readU32(bytes, base + k * 8, order));
+        const den: i32 = @bitCast(readU32(bytes, base + k * 8 + 4, order));
+        out[k] = if (den == 0) 0 else @as(f32, @floatFromInt(num)) / @as(f32, @floatFromInt(den));
+    }
+    return out;
+}
+
 fn readArrayU32(bytes: []const u8, e: Entry, idx: usize, order: ByteOrder) Error!u32 {
     const elem_size = e.typeSize();
     const base = e.value_off;
@@ -585,3 +738,282 @@ test "byte order: u16/u32 read consistency" {
 // (zig/borealkernel/tests/real_dng_check.zig) since Zig 0.16's file API
 // moved to std.Io.Dir which requires an Io instance — too noisy for a
 // unit-test setup. Run via `zig run tests/real_dng_check.zig` if needed.
+
+test "AsShotNeutral → WB prior (asn 0.5,1,0.667 ⇒ wb 2.0,1,1.5)" {
+    const testing = std.testing;
+    var buf = [_]u8{0} ** 40;
+    const put = struct {
+        fn u32le(b: []u8, o: usize, v: u32) void {
+            b[o + 0] = @truncate(v);
+            b[o + 1] = @truncate(v >> 8);
+            b[o + 2] = @truncate(v >> 16);
+            b[o + 3] = @truncate(v >> 24);
+        }
+    }.u32le;
+    // 3 rationals at offset 8: 1/2, 1/1, 2/3
+    put(&buf, 8, 1);  put(&buf, 12, 2);
+    put(&buf, 16, 1); put(&buf, 20, 1);
+    put(&buf, 24, 2); put(&buf, 28, 3);
+    const e = Entry{ .tag = Tag.as_shot_neutral, .type = 5, .count = 3, .value_off = 8 };
+    const asn = try readRational3(&buf, e, .little);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), asn[0], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 1.0), asn[1], 1e-4);
+    try testing.expectApproxEqAbs(@as(f32, 0.6667), asn[2], 1e-3);
+    // WB prior derivation (as parseIfd0 does): wb_c = green / asn_c
+    try testing.expectApproxEqAbs(@as(f32, 2.0), asn[1] / asn[0], 1e-3);
+    try testing.expectApproxEqAbs(@as(f32, 1.5), asn[1] / asn[2], 1e-3);
+}
+
+test "EXIF ISO: SHORT count>1 reads first array element, not the offset" {
+    // The bug fix: ISOSpeedRatings (34855) with count>1 is an out-of-line SHORT
+    // array; value_off is a FILE OFFSET. inlineU32 would return 8 (the offset);
+    // readUintAt must read the first element (200) from offset 8.
+    var buf = [_]u8{0} ** 16;
+    buf[8] = 200; // LE SHORT 200 at offset 8
+    buf[9] = 0;
+    buf[10] = 0x90; // second element 400 (proves we take element 0, not 1)
+    buf[11] = 0x01;
+    const e = Entry{ .tag = Tag.iso, .type = 3, .count = 2, .value_off = 8 };
+    try std.testing.expectEqual(@as(u32, 200), try readUintAt(&buf, e, .little));
+    try std.testing.expect(e.inlineU32(.little) == 8); // the offset — what the bug returned
+}
+
+test "readRational3 rejects wrong count/type" {
+    var buf = [_]u8{0} ** 40;
+    const bad_type = Entry{ .tag = Tag.as_shot_neutral, .type = 4, .count = 3, .value_off = 8 };
+    try std.testing.expectError(Error.MissingTag, readRational3(&buf, bad_type, .little));
+    const bad_count = Entry{ .tag = Tag.as_shot_neutral, .type = 5, .count = 2, .value_off = 8 };
+    try std.testing.expectError(Error.MissingTag, readRational3(&buf, bad_count, .little));
+}
+
+// ── EXIF SubIFD read tests ─────────────────────────────────────────────────
+// A tiny endian-aware TIFF builder produces a 2×2 RGGB uncompressed-strip DNG
+// (Compression=1) so dng.parse succeeds end-to-end, exercising the new EXIF
+// SubIFD pass alongside the existing required-tag decode and strip layout.
+
+const ExifFixture = struct {
+    exif_time_num: u32 = 0, // ExposureTime numerator;   0/0 ⇒ tag omitted
+    exif_time_den: u32 = 0,
+    iso: u32 = 0, // ISOSpeedRatings (SHORT);  0 ⇒ tag omitted
+    fnum_num: u32 = 0, // FNumber numerator;        0/0 ⇒ tag omitted
+    fnum_den: u32 = 0,
+    omit_subifd: bool = false, // no tag 34665 at all
+    bad_subifd_off: u32 = 0, // if != 0, point 34665 here (out of bounds)
+};
+
+const TiffBuilder = struct {
+    bytes: [512]u8 = undefined,
+    len: usize = 0,
+    order: ByteOrder,
+
+    fn byte(self: *TiffBuilder, v: u8) void {
+        self.bytes[self.len] = v;
+        self.len += 1;
+    }
+    fn putU16(self: *TiffBuilder, v: u16) void {
+        if (self.order == .little) {
+            self.byte(@truncate(v));
+            self.byte(@truncate(v >> 8));
+        } else {
+            self.byte(@truncate(v >> 8));
+            self.byte(@truncate(v));
+        }
+    }
+    fn putU32(self: *TiffBuilder, v: u32) void {
+        if (self.order == .little) {
+            self.byte(@truncate(v));
+            self.byte(@truncate(v >> 8));
+            self.byte(@truncate(v >> 16));
+            self.byte(@truncate(v >> 24));
+        } else {
+            self.byte(@truncate(v >> 24));
+            self.byte(@truncate(v >> 16));
+            self.byte(@truncate(v >> 8));
+            self.byte(@truncate(v));
+        }
+    }
+    // A SHORT entry holds its value inline in the high or low half depending on
+    // byte order (mirrors Entry.inlineU32).
+    fn entryShort(self: *TiffBuilder, tag: u16, v: u16) void {
+        self.putU16(tag);
+        self.putU16(3); // SHORT
+        self.putU32(1);
+        self.putU16(v); // low (LE) / high (MM, written MSB-first) half
+        self.putU16(0);
+    }
+    fn entryLong(self: *TiffBuilder, tag: u16, v: u32) void {
+        self.putU16(tag);
+        self.putU16(4); // LONG
+        self.putU32(1);
+        self.putU32(v);
+    }
+    // A tag whose value is stored out-of-line at `off`.
+    fn entryPtr(self: *TiffBuilder, tag: u16, typ: u16, count: u32, off: u32) void {
+        self.putU16(tag);
+        self.putU16(typ);
+        self.putU32(count);
+        self.putU32(off);
+    }
+};
+
+/// Build a valid 2×2 RGGB uncompressed DNG plus an optional EXIF SubIFD.
+fn buildExifDng(order: ByteOrder, fx: ExifFixture) TiffBuilder {
+    // Layout we lay down (offsets fixed so out-of-line pointers are easy):
+    //   0   : header (II/MM, 42, ifd0_off=8)
+    //   8   : IFD0
+    //   then out-of-line blobs (crop origin/size, pixel data, exif rationals),
+    //         then the EXIF SubIFD.
+    var b = TiffBuilder{ .order = order };
+
+    // Header.
+    if (order == .little) {
+        b.byte('I');
+        b.byte('I');
+    } else {
+        b.byte('M');
+        b.byte('M');
+    }
+    b.putU16(42);
+    b.putU32(8); // IFD0 at offset 8
+
+    const want_exif = !fx.omit_subifd;
+    const want_time = fx.exif_time_den != 0;
+    const want_fnum = fx.fnum_den != 0;
+    const want_iso = fx.iso != 0;
+
+    // Count IFD0 entries: 10 required (width, length, bits, compression,
+    // photometric, strip_offsets, strip_byte_counts, cfa, crop_origin,
+    // crop_size) + (exif pointer ? 1 : 0).
+    var ifd0_count: u16 = 10;
+    if (want_exif) ifd0_count += 1;
+
+    // IFD0 spans: 2 (count) + 12*N + 4 (next-IFD). Out-of-line region follows.
+    // We store crop origin/size as LONG[2] out-of-line (8 bytes each).
+    const ifd0_size: u32 = 2 + 12 * @as(u32, ifd0_count) + 4;
+    var off: u32 = 8 + ifd0_size; // running out-of-line cursor
+    const crop_org_off = off;
+    off += 8;
+    const crop_size_off = off;
+    off += 8;
+    const pixel_off = off;
+    off += 8; // 2×2 u16 = 8 bytes
+    const time_off = off;
+    if (want_exif and want_time) off += 8;
+    const fnum_off = off;
+    if (want_exif and want_fnum) off += 8;
+    const subifd_off = off;
+
+    // ── IFD0 ──
+    b.putU16(ifd0_count);
+    b.entryShort(Tag.image_width, 2);
+    b.entryShort(Tag.image_length, 2);
+    b.entryShort(Tag.bits_per_sample, 16);
+    b.entryShort(Tag.compression, 1); // uncompressed
+    b.entryShort(Tag.photometric_interpretation, @intCast(CFA_PHOTOMETRIC));
+    b.entryLong(Tag.strip_offsets, pixel_off);
+    b.entryLong(Tag.strip_byte_counts, 8);
+    // CFA pattern RGGB inline (BYTE[4] = 0,1,1,2). Bytes are byte-packed; write
+    // them low-end first regardless of order to match the decoder's accept set.
+    {
+        b.putU16(Tag.cfa_pattern);
+        b.putU16(1); // BYTE
+        b.putU32(4);
+        b.byte(0);
+        b.byte(1);
+        b.byte(1);
+        b.byte(2);
+    }
+    b.entryPtr(Tag.default_crop_origin, 4, 2, crop_org_off);
+    b.entryPtr(Tag.default_crop_size, 4, 2, crop_size_off);
+    if (want_exif) {
+        const ptr = if (fx.bad_subifd_off != 0) fx.bad_subifd_off else subifd_off;
+        b.entryLong(Tag.exif_ifd_pointer, ptr);
+    }
+    b.putU32(0); // next IFD = none
+
+    // ── out-of-line blobs ──
+    b.putU32(0); // crop origin x
+    b.putU32(0); // crop origin y
+    b.putU32(2); // crop size w
+    b.putU32(2); // crop size h
+    // pixel data: four u16 samples
+    b.putU16(1000);
+    b.putU16(2000);
+    b.putU16(3000);
+    b.putU16(4000);
+    if (want_exif and want_time) {
+        b.putU32(fx.exif_time_num);
+        b.putU32(fx.exif_time_den);
+    }
+    if (want_exif and want_fnum) {
+        b.putU32(fx.fnum_num);
+        b.putU32(fx.fnum_den);
+    }
+
+    // ── EXIF SubIFD ──
+    if (want_exif and fx.bad_subifd_off == 0) {
+        var sub_count: u16 = 0;
+        if (want_time) sub_count += 1;
+        if (want_iso) sub_count += 1;
+        if (want_fnum) sub_count += 1;
+        b.putU16(sub_count);
+        if (want_time) b.entryPtr(Tag.exposure_time, 5, 1, time_off);
+        if (want_iso) b.entryShort(Tag.iso, @intCast(fx.iso));
+        if (want_fnum) b.entryPtr(Tag.fnumber, 5, 1, fnum_off);
+        b.putU32(0); // next IFD
+    }
+
+    return b;
+}
+
+test "exif read little-endian" {
+    const alloc = std.testing.allocator;
+    const b = buildExifDng(.little, .{
+        .exif_time_num = 1,  .exif_time_den = 250, // 1/250 = 0.004
+        .iso = 100,
+        .fnum_num = 28, .fnum_den = 10,            // 2.8
+    });
+    const bytes = b.bytes[0..b.len];
+    const m = try parse(alloc, bytes);
+    defer alloc.free(m.backing);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.004), m.exposure_time, 1e-5);
+    try std.testing.expectEqual(@as(f32, 100), m.iso);
+    try std.testing.expectApproxEqAbs(@as(f32, 2.8), m.fnumber, 1e-4);
+}
+
+test "exif read big-endian (MM)" {
+    const alloc = std.testing.allocator;
+    const b = buildExifDng(.big, .{
+        .exif_time_num = 1,  .exif_time_den = 250,
+        .iso = 100,
+        .fnum_num = 28, .fnum_den = 10,
+    });
+    const m = try parse(alloc, b.bytes[0..b.len]);
+    defer alloc.free(m.backing);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.004), m.exposure_time, 1e-5);
+    try std.testing.expectEqual(@as(f32, 100), m.iso); // SHORT high-half quirk
+    try std.testing.expectApproxEqAbs(@as(f32, 2.8), m.fnumber, 1e-4);
+}
+
+test "exif absent -> sentinel zero" {
+    const alloc = std.testing.allocator;
+    const b = buildExifDng(.little, .{ .omit_subifd = true });
+    const m = try parse(alloc, b.bytes[0..b.len]);
+    defer alloc.free(m.backing);
+    try std.testing.expectEqual(@as(f32, 0), m.exposure_time);
+    try std.testing.expectEqual(@as(f32, 0), m.iso);
+    try std.testing.expectEqual(@as(f32, 0), m.fnumber);
+}
+
+test "exif pointer truncated -> graceful" {
+    const alloc = std.testing.allocator;
+    const b = buildExifDng(.little, .{
+        .exif_time_num = 1, .exif_time_den = 250,
+        .bad_subifd_off = 0xFFFFFF, // points far past bytes.len
+    });
+    const m = try parse(alloc, b.bytes[0..b.len]); // must not crash/error
+    defer alloc.free(m.backing);
+    try std.testing.expectEqual(@as(f32, 0), m.exposure_time);
+    try std.testing.expectEqual(@as(f32, 0), m.iso);
+    try std.testing.expectEqual(@as(f32, 0), m.fnumber);
+}

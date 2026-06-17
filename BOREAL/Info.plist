@@ -21,11 +21,12 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>NSCameraUsageDescription</key>
-	<string>BOREAL captures 64 RAW frames to build a single GIF89a from your scene.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>BOREAL saves the finished GIF89a to your Photos library.</string>
+	<string>BOREAL captures 4 RAW frames to fuse a single high-dynamic-range image.</string>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>

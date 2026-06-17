@@ -18,7 +18,19 @@
 
 set -euo pipefail
 
-ZIG=/opt/homebrew/bin/zig
+# Auto-detect zig in PATH; honor explicit override via ZIG_PATH.
+# Xcode's PATH does NOT include /opt/homebrew/bin, so we explicitly
+# prepend the canonical Homebrew bin to PATH for `command -v` to
+# find a brew-installed zig. Users on a non-Homebrew install can
+# set ZIG_PATH (in the .xcconfig, env, or shell) to override.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+ZIG="${ZIG_PATH:-$(command -v zig || true)}"
+if [ -z "$ZIG" ] || [ ! -x "$ZIG" ]; then
+    echo "ERROR: zig not found." >&2
+    echo "  Install:  brew install zig" >&2
+    echo "  Or set:   ZIG_PATH=/path/to/zig" >&2
+    exit 1
+fi
 KERNEL_DIR="${SRCROOT}/zig/borealkernel"
 
 # ----------------------------------------------------------------------------

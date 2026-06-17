@@ -2,22 +2,27 @@ import SwiftUI
 
 @main
 struct BorealApp: App {
-    @State private var coordinator = AppCoordinator()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        // Force-link the Zig kernel by referencing one of its symbols.
-        // Without this, the linker drops the unused `-lborealkernel` archive
-        // and item 4's `Decoder.swift` calls would fail at runtime with
-        // "symbol not found." Cheap startup cost; verifies linkage at launch.
-        BorealKernel.keepalive()
+        // Linkage canary: a missing -lborealkernel fails here, at launch.
+        Kernel.keepalive()
     }
 
     var body: some Scene {
         WindowGroup {
-            CameraView()
-                .environment(coordinator)
+            RootView()
                 .preferredColorScheme(.dark)
-                .statusBarHidden()
+                .background(Theme.bg.ignoresSafeArea())   // never a white frame underneath
+                // Cover the UI with black whenever the app isn't active, so the
+                // app-switcher snapshot / resume never flashes the previous screen
+                // (the captured photo or review) — and the launch reads as black.
+                .overlay {
+                    if scenePhase != .active {
+                        Theme.bg.ignoresSafeArea().transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.15), value: scenePhase)
         }
     }
 }

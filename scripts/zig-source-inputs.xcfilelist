@@ -1,0 +1,15 @@
+$(SRCROOT)/zig/borealkernel/src/root.zig
+$(SRCROOT)/zig/borealkernel/src/binomial.zig
+$(SRCROOT)/zig/borealkernel/src/bayer.zig
+$(SRCROOT)/zig/borealkernel/src/dng.zig
+$(SRCROOT)/zig/borealkernel/src/kernel.zig
+$(SRCROOT)/zig/borealkernel/src/ljpeg.zig
+$(SRCROOT)/zig/borealkernel/src/scene.zig
+$(SRCROOT)/zig/borealkernel/src/fuse.zig
+$(SRCROOT)/zig/borealkernel/src/demosaic.zig
+$(SRCROOT)/zig/borealkernel/src/color.zig
+$(SRCROOT)/zig/borealkernel/src/lut.zig
+$(SRCROOT)/zig/borealkernel/src/tiff.zig
+$(SRCROOT)/zig/borealkernel/tests/dng_parse.zig
+$(SRCROOT)/zig/borealkernel/tests/lslcd_synthetic.zig
+$(SRCROOT)/zig/borealkernel/tests/real_dng_check.zig
