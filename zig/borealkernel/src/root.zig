@@ -16,6 +16,12 @@ pub const kernel   = @import("kernel.zig");
 pub const bayer    = @import("bayer.zig");
 pub const ljpeg    = @import("ljpeg.zig");
 pub const binomial = @import("binomial.zig");
+pub const scene    = @import("scene.zig");
+pub const fuse     = @import("fuse.zig");
+pub const lut      = @import("lut.zig");
+pub const tiff     = @import("tiff.zig");
+pub const demosaic = @import("demosaic.zig");
+pub const color    = @import("color.zig");
 
 /// Status codes — matches `bk_status_t` enum in BorealKernel.h.
 pub const Status = enum(c_int) {
@@ -72,6 +78,14 @@ pub const Mosaic = extern struct {
     crop_origin_y:   u32,
     crop_size_w:     u32,
     crop_size_h:     u32,
+    wb_r:            f32,       // AsShotNeutral WB multipliers, green-normalized
+    wb_g:            f32,       // (= 1); feeds the ETTR planner's WB prior
+    wb_b:            f32,
+    exposure_time:   f32,       // EXIF ExposureTime (s); 0 = absent
+    iso:             f32,       // EXIF ISO; 0 = absent
+    fnumber:         f32,       // EXIF FNumber; 0 = absent/canceling
+    cam_to_pp:       [9]f32,    // camera-native → ProPhoto-linear 3×3 (row-major)
+    has_color:       bool,      // false → cam_to_pp is identity, embed no ICC
     samples:         ?[*]u16,   // heap, length = width * height
 };
 
@@ -179,6 +193,14 @@ export fn bk_decode_dng_to_mosaic(
         .crop_origin_y   = m.crop_y,
         .crop_size_w     = m.crop_w,
         .crop_size_h     = m.crop_h,
+        .wb_r            = m.wb_r,
+        .wb_g            = m.wb_g,
+        .wb_b            = m.wb_b,
+        .exposure_time   = m.exposure_time,
+        .iso             = m.iso,
+        .fnumber         = m.fnumber,
+        .cam_to_pp       = m.cam_to_pp,
+        .has_color       = m.has_color,
         .samples         = m.backing.ptr,
     };
     // Don't `dng.deinit(&m)` — we transferred ownership of `backing` to the
@@ -212,6 +234,185 @@ export fn bk_free_mosaic(mosaic: *Mosaic) void {
 ///   bits  8..15  = a_code
 ///   bits 16..23  = b_code
 ///   bits 24..31  = flags (precomputed predicates; see binomial.zig FLAG_*)
+/// v4 per-set trailer scalars. C ABI mirror of binomial.PerSetTrailer.
+pub const PerSetTrailer = binomial.PerSetTrailer;
+
+/// v4 per-session slow-scale scalars. C ABI mirror of binomial.SlowScalars.
+pub const SlowScalars = binomial.SlowScalars;
+
+// ── Stage A/B: pre-shutter scene analysis + exposure planning (scene.zig) ──
+// See ../../BOREAL-RGBT-HDR-WORKFLOW.md §1: ANALYZE → PLAN.
+
+/// C ABI mirror of scene.SceneClips — per-channel ETTR headroom (stops).
+pub const SceneClips = scene.SceneClips;
+/// C ABI mirror of scene.ExposurePlan — the 4-frame EV offsets.
+pub const ExposurePlan = scene.ExposurePlan;
+
+/// Stage A. Analyze an interleaved RGB frame (3 floats/pixel, normalized [0,1],
+/// UniWB for raw-accurate tails) → per-channel ETTR clips. Caller owns buffers.
+export fn bk_analyze_scene(rgb: [*]const f32, width: u32, height: u32, out: *SceneClips) void {
+    out.* = scene.analyzeFrame(rgb, width, height);
+}
+
+/// Stage B. SceneClips + white-balance prior `wb_mult` [R,G,B] → the 4-frame
+/// exposure plan. `extra_shadow` adds stops to the shadow-floor frame (f4).
+export fn bk_solve_ettr_exposures(clips: *const SceneClips, wb_mult: [*]const f32, extra_shadow: f32, out: *ExposurePlan) void {
+    out.* = scene.planExposures(clips.*, .{ wb_mult[0], wb_mult[1], wb_mult[2] }, extra_shadow);
+}
+
+/// Per-frame exposure read-out. Bin a RAW Bayer mosaic into three per-channel
+/// display histograms (green at the off-diagonal CFA sites, red/blue at the
+/// corners; swapped for BGGR), normalized by the sensor's black/white levels —
+/// no white balance, so the bars read true per-channel exposure and clipping.
+/// Each `out_*` buffer must hold `n_bins` u32s. Caller owns all buffers.
+export fn bk_channel_histograms(
+    samples: [*]const u16,
+    width: u32,
+    height: u32,
+    cfa: u32,
+    black: f32,
+    white: f32,
+    n_bins: u32,
+    out_r: [*]u32,
+    out_g: [*]u32,
+    out_b: [*]u32,
+) void {
+    scene.channelHistograms(samples, width, height, cfa, black, white, n_bins, out_r, out_g, out_b);
+}
+
+/// Live preview exposure read-out. Bin an interleaved 8-bit BGRA video frame
+/// (the live AVCaptureVideoDataOutput feed) into three per-channel display
+/// histograms, each channel normalized /255 (display-referred — NO sensor
+/// black/white, NO white balance). `row_stride` is the buffer's bytesPerRow IN
+/// BYTES (CVPixelBuffer pads rows). Byte order BGRA: B@o, G@o+1, R@o+2, A
+/// skipped. Each `out_*` buffer must hold `n_bins` u32s. Caller owns all buffers.
+export fn bk_rgb_histograms(
+    bgra: [*]const u8,
+    width: u32,
+    height: u32,
+    row_stride: u32,
+    n_bins: u32,
+    out_r: [*]u32,
+    out_g: [*]u32,
+    out_b: [*]u32,
+) void {
+    scene.rgbHistograms(bgra, width, height, row_stride, n_bins, out_r, out_g, out_b);
+}
+
+// ── Stage D: RGBT scene-linear fusion (fuse.zig) ───────────────────────────
+// See ../../BOREAL-RGBT-HDR-WORKFLOW.md §2. Owned algorithm, strong SIMD.
+
+/// C ABI mirror of fuse.FuseParams.
+pub const FuseParams = fuse.FuseParams;
+
+/// Fuse 4 raw frames (u16, same length `n`) into one scene-linear f32 buffer.
+/// Caller owns all five buffers; `out` must hold at least `n` floats.
+export fn bk_fuse_mosaics(
+    f0: [*]const u16,
+    f1: [*]const u16,
+    f2: [*]const u16,
+    f3: [*]const u16,
+    n: usize,
+    params: *const FuseParams,
+    out: [*]f32,
+) void {
+    fuse.fuse(.{ f0[0..n], f1[0..n], f2[0..n], f3[0..n] }, out[0..n], params.*);
+}
+
+/// Compute the per-frame relative exposure ratios from each frame's EXIF
+/// (ExposureTime/ISO/FNumber). Single source of truth for direction,
+/// normalization, fallback, and clamp — see fuse.relativeExposures.
+export fn bk_relative_exposures(
+    exposure_time: *const [4]f32,
+    iso: *const [4]f32,
+    fnumber: *const [4]f32,
+    out: *[4]f32,
+) void {
+    out.* = fuse.relativeExposures(exposure_time.*, iso.*, fnumber.*);
+}
+
+// ── Output B: owned 64³ .cube LUT baker (lut.zig) ──────────────────────────
+// See ../../BOREAL-RGBT-HDR-WORKFLOW.md §4. Owned algorithm, strong SIMD.
+
+/// C ABI mirror of lut.LookParams (ASC-CDL grade).
+pub const LookParams = lut.LookParams;
+
+/// Bake the look into a grid³×3 interleaved RGB lattice (red fastest).
+/// `out` must hold grid*grid*grid*3 floats. Caller owns both buffers.
+export fn bk_build_cube_lut(params: *const LookParams, grid: u32, out: [*]f32) void {
+    const n: usize = @as(usize, grid) * grid * grid * 3;
+    lut.bakeLattice(out[0..n], grid, params.*);
+}
+
+/// Serialize a baked lattice as `.cube` text into `buf`. Returns bytes written,
+/// or 0 if the buffer is too small.
+export fn bk_emit_cube(lattice: [*]const f32, grid: u32, buf: [*]u8, buf_len: usize) usize {
+    const n: usize = @as(usize, grid) * grid * grid * 3;
+    return lut.emitCube(buf[0..buf_len], lattice[0..n], grid, "BOREAL") orelse 0;
+}
+
+/// Apply the SAME ASC-CDL look the cube bakes (lut.applyLook) to an interleaved
+/// RGB f32 buffer of `n_px` pixels, in place. Inputs/outputs are [0,1] display-
+/// referred. This is what makes the on-screen preview byte-identical to what the
+/// exported .cube produces in Photoshop (★preview≡cube).
+export fn bk_apply_look(rgb: [*]f32, n_px: usize, params: *const LookParams) void {
+    var i: usize = 0;
+    while (i < n_px) : (i += 1) {
+        const base = i * 3;
+        const out = lut.applyLook(.{ rgb[base], rgb[base + 1], rgb[base + 2] }, params.*);
+        rgb[base] = out[0];
+        rgb[base + 1] = out[1];
+        rgb[base + 2] = out[2];
+    }
+}
+
+// ── Phase 1: full-resolution demosaic (demosaic.zig) ───────────────────────
+// See ../../BOREAL-RGBT-HDR-WORKFLOW.md §2. Owned Malvar–He–Cutler, strong SIMD.
+
+/// Demosaic a single-channel mosaic (fused, scene-linear f32) into interleaved
+/// RGB. `cfa`: 0 = RGGB, 1 = BGGR (matches bk_cfa_pattern_t). `out` ≥ w*h*3.
+export fn bk_demosaic_full(m: [*]const f32, width: u32, height: u32, cfa: u32, out: [*]f32) void {
+    const w: usize = width;
+    const h: usize = height;
+    demosaic.demosaic(m[0 .. w * h], w, h, cfa == 1, out[0 .. w * h * 3]);
+}
+
+// ── Colour transform: camera-native → ProPhoto linear (color.zig) ──────────
+// See ../../BOREAL-RGBT-HDR-WORKFLOW.md §3. Owned algorithm, strong SIMD.
+
+/// Apply a row-major 3×3 (the mosaic's `cam_to_pp`) to an interleaved RGB f32
+/// buffer of `n_px` pixels, in place. Negatives clamp to 0; HDR highlights kept.
+export fn bk_apply_color_matrix(rgb: [*]f32, n_px: usize, matrix: [*]const f32) void {
+    var m: [9]f32 = undefined;
+    inline for (0..9) |k| m[k] = matrix[k];
+    color.applyMatrix(rgb[0 .. n_px * 3], m);
+}
+
+// ── Output A: owned 32-bit-float HDR TIFF encoder (tiff.zig) ───────────────
+// See ../../BOREAL-RGBT-HDR-WORKFLOW.md §3.
+
+/// Bytes needed to encode a width×height float-RGB TIFF with an `icc_len` ICC.
+export fn bk_tiff_size(width: u32, height: u32, icc_len: usize) usize {
+    return tiff.tiffSize(width, height, icc_len);
+}
+
+/// Encode a 32-bit-float RGB TIFF into `buf`. `pixels` = interleaved RGB,
+/// length ≥ width*height*3. `icc`/`icc_len` may be null/0. Returns bytes
+/// written, or 0 if `buf` is too small.
+export fn bk_write_tiff_f32(
+    width: u32,
+    height: u32,
+    pixels: [*]const f32,
+    icc: ?[*]const u8,
+    icc_len: usize,
+    buf: [*]u8,
+    buf_len: usize,
+) usize {
+    const npx: usize = @as(usize, width) * @as(usize, height) * 3;
+    const icc_slice: []const u8 = if (icc) |p| p[0..icc_len] else &.{};
+    return tiff.writeTiff(buf[0..buf_len], width, height, pixels[0..npx], icc_slice) orelse 0;
+}
+
 export fn bk_binomial_encode_set(
     lab_frames:  [*]const f32,    // 49,152 floats
     col_L_min:   [*]f32,
@@ -224,15 +425,93 @@ export fn bk_binomial_encode_set(
     col_b_max:   [*]f32,
     col_b_mean:  [*]f32,
     col_codes_flags: [*]u32,
+    col_L_shape: [*]u32,
+    col_a_shape: [*]u32,
+    col_b_shape: [*]u32,
+    // v4 fast-scale additions
+    col_fast_cov_La:    [*]f32,
+    col_fast_cov_Lb:    [*]f32,
+    col_fast_cov_ab:    [*]f32,
+    col_fast_nbr_rho_L: [*]f32,
+    col_fast_nbr_rho_a: [*]f32,
+    col_fast_nbr_rho_b: [*]f32,
+    col_fast_motion:    [*]f32,
+    out_trailer:        *PerSetTrailer,
+    /// User-chosen 4-frame combiner. See `bk_combiner_t` in BorealKernel.h:
+    /// 0=mean (default, v4-compatible), 1=median, 2=inverse-variance
+    /// weighted, 3=trimmed (drop farthest from μ).
+    combiner: u32,
 ) c_int {
     const total_floats = binomial.FLOATS_PER_FRAME * binomial.FRAMES_PER_SET;
     const spatial = binomial.SPATIAL_BINS;
+    // Clamp combiner to valid enum range; out-of-range values fall
+    // back to .mean rather than UB.
+    const combiner_enum: binomial.Combiner = switch (combiner) {
+        0 => .mean,
+        1 => .median,
+        2 => .inverse_variance_weighted,
+        3 => .trimmed_mean,
+        else => .mean,
+    };
     binomial.encodeSet(
         lab_frames[0..total_floats],
         col_L_min[0..spatial],   col_L_max[0..spatial],   col_L_mean[0..spatial],
         col_a_min[0..spatial],   col_a_max[0..spatial],   col_a_mean[0..spatial],
         col_b_min[0..spatial],   col_b_max[0..spatial],   col_b_mean[0..spatial],
         col_codes_flags[0..spatial],
+        col_L_shape[0..spatial], col_a_shape[0..spatial], col_b_shape[0..spatial],
+        col_fast_cov_La[0..spatial],    col_fast_cov_Lb[0..spatial],    col_fast_cov_ab[0..spatial],
+        col_fast_nbr_rho_L[0..spatial], col_fast_nbr_rho_a[0..spatial], col_fast_nbr_rho_b[0..spatial],
+        col_fast_motion[0..spatial],
+        out_trailer,
+        combiner_enum,
+    );
+    return @intFromEnum(Status.ok);
+}
+
+/// v4 slow-scale fold across 16 sets' channel-mean grids. Inputs are 16
+/// pointers each to a 4,096-float L_mean, a_mean, b_mean column from the
+/// per-set `.bvox`. Outputs are 10 per-bin slow columns + 4 session-level
+/// scalars (3 lag-1 autocorr + 1 hierarchical variance ratio ν).
+export fn bk_slow_fold_session(
+    L_means_ptrs: [*]const [*]const f32,    // 16 pointers to L_mean grids
+    a_means_ptrs: [*]const [*]const f32,    // 16 pointers to a_mean grids
+    b_means_ptrs: [*]const [*]const f32,    // 16 pointers to b_mean grids
+    out_slow_L_mean: [*]f32,
+    out_slow_a_mean: [*]f32,
+    out_slow_b_mean: [*]f32,
+    out_slow_L_var:  [*]f32,
+    out_slow_a_var:  [*]f32,
+    out_slow_b_var:  [*]f32,
+    out_slow_cov_La: [*]f32,
+    out_slow_cov_Lb: [*]f32,
+    out_slow_cov_ab: [*]f32,
+    out_slow_motion: [*]f32,
+    out_scalars:     *SlowScalars,
+) c_int {
+    const spatial = binomial.SPATIAL_BINS;
+
+    var inp: binomial.SlowFoldInput = undefined;
+    var s: u32 = 0;
+    while (s < 16) : (s += 1) {
+        inp.L_means[s] = L_means_ptrs[s];
+        inp.a_means[s] = a_means_ptrs[s];
+        inp.b_means[s] = b_means_ptrs[s];
+    }
+
+    binomial.slowFoldSession(
+        inp,
+        out_slow_L_mean[0..spatial],
+        out_slow_a_mean[0..spatial],
+        out_slow_b_mean[0..spatial],
+        out_slow_L_var [0..spatial],
+        out_slow_a_var [0..spatial],
+        out_slow_b_var [0..spatial],
+        out_slow_cov_La[0..spatial],
+        out_slow_cov_Lb[0..spatial],
+        out_slow_cov_ab[0..spatial],
+        out_slow_motion[0..spatial],
+        out_scalars,
     );
     return @intFromEnum(Status.ok);
 }
@@ -244,4 +523,19 @@ test "root: status enum stays in sync with bridging header values" {
 
 test "root: ref all decls" {
     std.testing.refAllDecls(@This());
+}
+
+test "root: Mosaic ABI parity (matches bk_mosaic_t in BorealKernel.h)" {
+    // The C header lays these fields out identically; drift means Swift reads
+    // garbage. Layout: 10×u32 (incl. CfaPattern=c_int) → wb @40, exposure/iso/
+    // fnumber @52/56/60, cam_to_pp[9] @64..100, has_color @100, then samples is
+    // pointer-aligned to @104 and the struct rounds to 112B.
+    try std.testing.expectEqual(@as(usize, 40), @offsetOf(Mosaic, "wb_r"));
+    try std.testing.expectEqual(@as(usize, 52), @offsetOf(Mosaic, "exposure_time"));
+    try std.testing.expectEqual(@as(usize, 56), @offsetOf(Mosaic, "iso"));
+    try std.testing.expectEqual(@as(usize, 60), @offsetOf(Mosaic, "fnumber"));
+    try std.testing.expectEqual(@as(usize, 64), @offsetOf(Mosaic, "cam_to_pp"));
+    try std.testing.expectEqual(@as(usize, 100), @offsetOf(Mosaic, "has_color"));
+    try std.testing.expectEqual(@as(usize, 104), @offsetOf(Mosaic, "samples"));
+    try std.testing.expectEqual(@as(usize, 112), @sizeOf(Mosaic));
 }

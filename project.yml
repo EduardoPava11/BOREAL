@@ -23,9 +23,14 @@ targets:
     type: application
     platform: iOS
     sources:
-      - path: BOREAL
-        excludes:
-          - "Info.plist"
+      # Active app, laid out by function (form follows function). The dead
+      # 64-frame-GIF tree was removed; BorealKernel.h and the bridging header
+      # are headers (found via HEADER_SEARCH_PATHS), not sources.
+      - path: BOREAL/App
+      - path: BOREAL/Capture
+      - path: BOREAL/Pipeline
+      - path: BOREAL/Review
+      - path: BOREAL/Shared
     resources:
       - path: BOREAL/Assets.xcassets
     info:
@@ -37,8 +42,7 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        NSCameraUsageDescription: "BOREAL captures 64 RAW frames to build a single GIF89a from your scene."
-        NSPhotoLibraryAddUsageDescription: "BOREAL saves the finished GIF89a to your Photos library."
+        NSCameraUsageDescription: "BOREAL captures 4 RAW frames to fuse a single high-dynamic-range image."
         UIRequiredDeviceCapabilities:
           - arm64
           - metal
@@ -72,18 +76,17 @@ targets:
       - name: "Build Zig kernel (libborealkernel.a)"
         script: |
           "${SRCROOT}/scripts/build-zig.sh"
+        # Declared inputs: every .zig source that affects the .a output.
+        # The xcfilelist is human-maintained; Xcode uses it to decide
+        # whether the pre-build phase needs to re-run.
+        inputFiles:
+          - $(SRCROOT)/zig/borealkernel/build.zig
+          - $(SRCROOT)/zig/borealkernel/build.zig.zon
+        inputFileLists:
+          - $(SRCROOT)/scripts/zig-source-inputs.xcfilelist
         outputFiles:
           - "$(SRCROOT)/zig/borealkernel/zig-out/$(EFFECTIVE_PLATFORM_NAME:c=)/lib/libborealkernel.a"
-        basedOnDependencyAnalysis: false   # always run; Zig handles its own caching
-
-  BOREALTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - BOREALTests
-    dependencies:
-      - target: BOREAL
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.boreal.tests
-        GENERATE_INFOPLIST_FILE: YES
+        # With proper input declarations Xcode can skip this phase when
+        # nothing changed. Zig's own caching is still the second line of
+        # defense if the input list is stale.
+        basedOnDependencyAnalysis: true
