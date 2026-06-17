@@ -1,22 +1,18 @@
 import SwiftUI
 
-/// The live-camera HOME screen — the app's root surface. Shows the live preview
-/// with the Zig RGB-histogram exposure overlay, a round shutter as the PRIMARY
-/// action (fires the 4-frame RAW bracket → onCapture), and an always-reachable
-/// Import affordance.
+/// The live-camera HOME screen — the app's root surface and first thing seen on
+/// launch. Pure-black instrument styling: full-bleed preview, a tracked wordmark,
+/// a translucent RGB-histogram read-out (computed live by the Zig kernel), and a
+/// single round shutter that fires the 4-frame RAW bracket.
 ///
-/// HARD CONSTRAINT (the simulator has no camera): when the camera cannot start
-/// (denied / no device / sim), this renders a fallback panel whose ONLY action
-/// is "Import 4 DNGs" — the in-sim test path is never stranded. Import is also
-/// available as a secondary button while the camera runs.
+/// Three states avoid any launch "glimpse":
+///   • starting  → black + wordmark + spinner (the brief async camera warm-up)
+///   • running   → the live preview + overlays + shutter
+///   • failed    → a clean fallback whose primary action is Import (the in-sim
+///                 test path; never stranded when the camera can't start)
 struct CameraHomeView: View {
-    /// A pipeline/import error from the last attempt (RootView's .error phase),
-    /// surfaced here so a failed process()/import isn't silently swallowed when
-    /// the view bounces back to the live camera.
     var pipelineError: String? = nil
-    /// Hand 4 captured RAW DNG blobs to the pipeline.
     let onCapture: ([Data]) -> Void
-    /// Open the RootView-owned .fileImporter (the in-sim test path).
     let onImport: () -> Void
 
     @State private var camera = CameraController()
@@ -25,22 +21,20 @@ struct CameraHomeView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Theme.bg.ignoresSafeArea()
 
             if camera.running {
                 liveCamera
+            } else if camError != nil || pipelineError != nil {
+                fallback
             } else {
-                noCameraFallback
+                starting
             }
         }
         .task {
-            // Restart the camera every time the home re-appears (e.g. coming back
-            // from Review). On throw OR a non-running session, surface the error
-            // so the fallback panel (with Import) shows instead of swallowing it.
             do {
                 try await camera.start()
-                if camera.running { camError = nil }
-                else { camError = "Camera unavailable." }
+                camError = camera.running ? nil : "Camera unavailable."
             } catch {
                 camError = "\(error)"
             }
@@ -48,100 +42,97 @@ struct CameraHomeView: View {
         .onDisappear { camera.stop() }
     }
 
-    // ── Live camera (device) ─────────────────────────────────────────────────
+    // ── Starting (clean black warm-up — no flash of the import panel) ─────────
+    private var starting: some View {
+        VStack(spacing: 16) {
+            Wordmark(size: 24)
+            ProgressView().tint(Theme.textDim)
+        }
+    }
+
+    // ── Live camera ──────────────────────────────────────────────────────────
     @ViewBuilder private var liveCamera: some View {
         CameraPreview(session: camera.session).ignoresSafeArea()
 
-        // Live Zig exposure read-out, computed by bk_rgb_histograms on the video
-        // feed (NOT in Swift) and published from CameraController. Display-referred
-        // /255 — a relative pre-shutter exposure guide (see Kernel.liveHistograms).
-        if let h = camera.liveHist {
-            VStack {
-                Spacer()
-                HStack {
-                    ClipDots(hist: h)
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(.black.opacity(0.45), in: Capsule())
-                    Spacer()
-                }
-                RGBHistogramView(hist: h)
-                    .frame(height: 56)
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 150)
-            .allowsHitTesting(false)
-        }
-
-        VStack {
+        VStack(spacing: 0) {
+            // Top bar: wordmark + Import.
             HStack {
-                Text("BOREAL")
-                    .font(.title2.weight(.bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(.black.opacity(0.35), in: Capsule())
+                Wordmark(size: 15)
                 Spacer()
-                // Import stays reachable even while the camera runs.
-                Button { onImport() } label: {
-                    Image(systemName: "square.and.arrow.down").font(.title3.weight(.semibold))
-                        .foregroundStyle(.white).padding(12)
-                        .background(.black.opacity(0.4), in: Circle())
+                Button(action: onImport) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .frame(width: 40, height: 40)
+                        .background(.ultraThinMaterial, in: Circle())
                 }
             }
-            .padding()
+            .padding(.horizontal, 18).padding(.top, 8)
 
-            // Surface a failed capture (camError, camera still running) or a
-            // failed pipeline/import (pipelineError) — otherwise it's invisible.
             if let msg = pipelineError ?? camError {
                 Text(msg)
-                    .font(.footnote).foregroundStyle(.white)
+                    .font(.mono(12))
+                    .foregroundStyle(Theme.text)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(.red.opacity(0.85), in: Capsule())
-                    .padding(.horizontal)
+                    .background(Color.red.opacity(0.85), in: Capsule())
+                    .padding(.top, 10)
             }
 
             Spacer()
 
+            // Live Zig exposure read-out (bk_rgb_histograms on the video feed).
+            if let h = camera.liveHist {
+                VStack(spacing: 6) {
+                    HStack {
+                        Text("RGB").font(.mono(10, .semibold)).foregroundStyle(Theme.textDim)
+                        Spacer()
+                        ClipDots(hist: h)
+                    }
+                    RGBHistogramView(hist: h).frame(height: 52)
+                }
+                .padding(10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 18)
+                .padding(.bottom, 20)
+                .allowsHitTesting(false)
+            }
+
+            // Shutter.
             Button(action: shoot) {
                 ZStack {
-                    Circle().stroke(.white, lineWidth: 5).frame(width: 78, height: 78)
-                    Circle().fill(.white).frame(width: 64, height: 64)
+                    Circle().strokeBorder(Theme.text, lineWidth: 4).frame(width: 76, height: 76)
+                    Circle().fill(Theme.text).frame(width: 62, height: 62)
+                        .opacity(busy ? 0.4 : 1)
                     if busy { ProgressView().tint(.black) }
                 }
             }
             .disabled(busy)
-            .padding(.bottom, 36)
+            .padding(.bottom, 40)
         }
     }
 
-    // ── No-camera / denied fallback (simulator, denied permission, no device) ──
-    @ViewBuilder private var noCameraFallback: some View {
-        VStack(spacing: 18) {
-            Image(systemName: "camera.aperture")
-                .font(.system(size: 56, weight: .thin))
-                .foregroundStyle(.white.opacity(0.5))
-            Text("BOREAL")
-                .font(.largeTitle.weight(.bold))
-                .foregroundStyle(.white)
-            Text(pipelineError ?? camError ?? "Starting camera…")
-                .font(.callout)
-                .foregroundStyle(.white.opacity(0.7))
+    // ── Failed / no-camera fallback (sim, denied, no device) ─────────────────
+    private var fallback: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            Wordmark(size: 26)
+            Text(pipelineError ?? camError ?? "Camera unavailable.")
+                .font(.mono(12))
+                .foregroundStyle(pipelineError != nil ? .red : Theme.textDim)
                 .multilineTextAlignment(.center)
-            Text("Import 4 RAW frames to fuse into\none HDR image + a Photoshop LUT.")
+            Text("Capture 4 RAW frames, or import a set,\nto fuse one HDR image + a Photoshop LUT.")
                 .font(.footnote)
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(Theme.textDim)
                 .multilineTextAlignment(.center)
-
-            // The ONLY action available when the camera can't start — never
-            // strand the in-sim Import test path.
-            Button { onImport() } label: {
+                .padding(.top, 2)
+            Spacer()
+            Button(action: onImport) {
                 Label("Import 4 DNGs", systemImage: "square.and.arrow.down")
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(.horizontal, 40)
-            .padding(.top, 8)
+            .buttonStyle(PrimaryButtonStyle())
+            .padding(.horizontal, 36)
+            .padding(.bottom, 24)
         }
         .padding(24)
     }

@@ -39,7 +39,8 @@ targets:
         CFBundleDisplayName: BOREAL
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
-        UILaunchScreen: {}
+        UILaunchScreen:
+          UIColorName: LaunchBackground   # black → no white flash before the app
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSCameraUsageDescription: "BOREAL captures 4 RAW frames to fuse a single high-dynamic-range image."

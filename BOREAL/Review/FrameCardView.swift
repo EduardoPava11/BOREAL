@@ -9,13 +9,14 @@ struct FrameCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("F\(card.index + 1)")
-                    .font(.caption2.weight(.bold))
+                    .font(.mono(10, .bold))
+                    .foregroundStyle(Theme.text)
                     .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(.tint.opacity(0.25), in: Capsule())
+                    .background(Theme.surfaceHi, in: Capsule())
                 if let s = card.stops, abs(s) >= 0.01 {
                     Text(String(format: "%+.1f EV", s))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .font(.mono(10))
+                        .foregroundStyle(Theme.accent)
                 }
                 Spacer()
                 ClipDots(hist: card.hist)
@@ -25,12 +26,11 @@ struct FrameCardView: View {
                     .resizable()
                     .scaledToFill()
                     .frame(height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             RGBHistogramView(hist: card.hist)
                 .frame(height: 48)
         }
-        .padding(8)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .panel(8)
     }
 }

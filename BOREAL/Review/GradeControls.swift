@@ -6,39 +6,39 @@ struct GradeControls: View {
     @Bindable var model: PipelineModel
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 10) {
             HStack {
-                Text("Look · ASC-CDL").font(.caption.weight(.semibold))
+                Text("LOOK · ASC-CDL").font(.mono(11, .semibold)).foregroundStyle(Theme.textDim)
                 Spacer()
-                Button("Reset") {
+                Button("RESET") {
                     model.grade = .default
                     model.refreshPreview()
                     model.rebakeCube()
                 }
-                .font(.caption2)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .font(.mono(10, .semibold))
+                .foregroundStyle(Theme.accent)
             }
-            row("Exposure", $model.grade.exposure, -2...2, "%+.2f")
-            row("Contrast", $model.grade.contrast, 0.6...1.6, "%.2f")
-            row("Saturation", $model.grade.saturation, 0...2, "%.2f")
-            row("Temp", $model.grade.temperature, -0.3...0.3, "%+.2f")
+            row("EXPOSURE", $model.grade.exposure, -2...2, "%+.2f")
+            row("CONTRAST", $model.grade.contrast, 0.6...1.6, "%.2f")
+            row("SATURATION", $model.grade.saturation, 0...2, "%.2f")
+            row("TEMP", $model.grade.temperature, -0.3...0.3, "%+.2f")
         }
-        .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .panel()
     }
 
     @ViewBuilder private func row(_ label: String, _ value: Binding<Float>,
                                   _ range: ClosedRange<Float>, _ fmt: String) -> some View {
-        HStack(spacing: 8) {
-            Text(label).font(.caption2).frame(width: 78, alignment: .leading)
+        HStack(spacing: 10) {
+            Text(label).font(.mono(10)).foregroundStyle(Theme.textDim)
+                .frame(width: 84, alignment: .leading)
             Slider(value: Binding(get: { value.wrappedValue },
                                   set: { value.wrappedValue = $0; model.refreshPreview() }),
                    in: range,
                    onEditingChanged: { editing in if !editing { model.rebakeCube() } })
+                .tint(Theme.accent)
             Text(String(format: fmt, value.wrappedValue))
-                .font(.caption2.monospacedDigit())
-                .frame(width: 46, alignment: .trailing)
+                .font(.mono(11)).foregroundStyle(Theme.text)
+                .frame(width: 48, alignment: .trailing)
         }
     }
 }

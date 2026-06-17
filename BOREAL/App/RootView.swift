@@ -44,12 +44,13 @@ struct RootView: View {
             )
         case .processing:
             ZStack {
-                Color.black.ignoresSafeArea()
-                VStack(spacing: 16) {
-                    ProgressView().controlSize(.large)
+                Theme.bg.ignoresSafeArea()
+                VStack(spacing: 18) {
+                    Wordmark(size: 22)
+                    ProgressView().tint(Theme.textDim)
                     Text(model.status)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .font(.mono(12))
+                        .foregroundStyle(Theme.textDim)
                         .multilineTextAlignment(.center)
                         .animation(.default, value: model.status)
                 }
