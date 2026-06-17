@@ -1,5 +1,9 @@
 import Foundation
 import CoreGraphics
+import os
+
+/// Subsystem logger — view in Console.app / `log stream --predicate 'subsystem == "com.daniel.boreal"'`.
+let blog = Logger(subsystem: "com.daniel.boreal", category: "pipeline")
 
 /// Thin Swift facade over the new Zig RGBT→HDR pipeline (declared in
 /// `BorealKernel.h`, linked via `-lborealkernel`). Pure, stateless, nonisolated.
@@ -44,12 +48,54 @@ enum Kernel {
         }
     }
 
-    static func decodeDNG(_ data: Data) -> Frame? {
+    /// Human name for a `bk_status_t` code (from BorealKernel.h) — turns a bare
+    /// "could not decode" into the exact reason the Zig decoder rejected the DNG.
+    static func statusName(_ s: Int32) -> String {
+        switch s {
+        case 0:  return "OK"
+        case 1:  return "BAD_TIFF_MAGIC"
+        case 2:  return "UNSUPPORTED_BYTE_ORDER"
+        case 3:  return "UNSUPPORTED_COMPRESSION"
+        case 4:  return "UNSUPPORTED_CFA_PATTERN"
+        case 5:  return "UNSUPPORTED_BIT_DEPTH"
+        case 6:  return "BAD_DIMENSIONS"
+        case 7:  return "MISSING_TAG"
+        case 8:  return "SHORT_READ"
+        case 9:  return "BAD_OUTPUT_BUFFER"
+        case 10: return "CROP_TOO_SMALL"
+        case 11: return "BAD_CROP_ORIGIN"
+        case 12: return "ALLOCATION_FAILED"
+        case 14: return "UNSUPPORTED_COMPRESSION_DEFLATE"
+        case 15: return "UNSUPPORTED_COMPRESSION_LOSSY_DNG"
+        case 16: return "UNSUPPORTED_COMPRESSION_APPLE_VC8R"
+        case 17: return "LJPEG_DECODE_FAILED"
+        case 18: return "NULL_POINTER"
+        case 19: return "LJPEG_BAD_MAGIC"
+        case 20: return "LJPEG_UNEXPECTED_END"
+        case 21: return "LJPEG_UNSUPPORTED_MARKER"
+        case 22: return "LJPEG_UNSUPPORTED_COMPONENT_COUNT"
+        case 23: return "LJPEG_UNSUPPORTED_PRECISION"
+        case 24: return "LJPEG_UNSUPPORTED_PREDICTOR"
+        case 25: return "LJPEG_HAS_RESTART_MARKERS"
+        case 26: return "LJPEG_MALFORMED_HUFFMAN_TABLE"
+        case 27: return "LJPEG_INVALID_HUFFMAN_CODE"
+        default: return "UNKNOWN(\(s))"
+        }
+    }
+
+    /// Decode one DNG. Returns the frame on success, or the raw `bk_status_t` on
+    /// failure so the caller can report exactly why (and it's logged here too).
+    static func decodeDNG(_ data: Data) -> (frame: Frame?, status: Int32) {
         var m = bk_mosaic_t()
         let status = data.withUnsafeBytes { raw -> Int32 in
-            bk_decode_dng_to_mosaic(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &m)
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return 18 } // NULL_POINTER
+            return bk_decode_dng_to_mosaic(base, data.count, &m)
         }
-        guard status == 0, let s = m.samples else { return nil }
+        guard status == 0, let s = m.samples else {
+            blog.error("decodeDNG failed: \(data.count) bytes → status \(status) (\(Self.statusName(status), privacy: .public))")
+            bk_free_mosaic(&m)   // safe no-op when samples == null
+            return (nil, status)
+        }
         let width = Int(m.width), height = Int(m.height)
         let cfa: UInt32 = (m.cfa == BK_CFA_BGGR) ? 1 : 0
         let black = Float(m.black_level), white = Float(m.white_level)
@@ -60,9 +106,10 @@ enum Kernel {
         let camToPP = [c.0, c.1, c.2, c.3, c.4, c.5, c.6, c.7, c.8]
         let hasColor = m.has_color
         bk_free_mosaic(&m)
-        return Frame(width: width, height: height, cfa: cfa, black: black, white: white,
-                     wb: wb, exposureTime: exposureTime, iso: iso, fNumber: fNumber,
-                     camToPP: camToPP, hasColor: hasColor, samples: samples)
+        blog.debug("decoded \(width)×\(height) cfa=\(cfa) black=\(black) white=\(white) et=\(exposureTime) iso=\(iso) f=\(fNumber) hasColor=\(hasColor)")
+        return (Frame(width: width, height: height, cfa: cfa, black: black, white: white,
+                      wb: wb, exposureTime: exposureTime, iso: iso, fNumber: fNumber,
+                      camToPP: camToPP, hasColor: hasColor, samples: samples), 0)
     }
 
     /// Apply the camera-native → ProPhoto-linear colour transform in place (Zig,

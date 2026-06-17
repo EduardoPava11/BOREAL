@@ -97,7 +97,8 @@ final class CameraController: NSObject {
         session.sessionPreset = .photo
 
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
-        else { throw CamError.noDevice }
+        else { blog.error("camera: no back wide-angle device (expected in the Simulator)"); throw CamError.noDevice }
+        blog.info("camera: device \(device.localizedName, privacy: .public)")
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else { throw CamError.configFailed }
         session.addInput(input)
@@ -115,11 +116,16 @@ final class CameraController: NSObject {
             videoOut.setSampleBufferDelegate(self, queue: videoQueue)
         }
 
-        // Apple ProRAW when available → an LJPEG-tiled DNG the kernel decodes;
-        // otherwise plain Bayer RAW DNG. Either feeds the same pipeline.
-        if output.isAppleProRAWSupported { output.isAppleProRAWEnabled = true }
+        // BOREAL captures NAKED Bayer RAW only (ProRAW deliberately disabled).
+        // ProRAW yields Apple-processed DNGs — demosaiced Linear, or compressed
+        // Bayer ('vc8r')/lossy DNG — which the kernel decoder rejects. A plain
+        // Bayer RAW DNG (raw CFA mosaic in IFD0, Compression=1 or LJPEG SOF3) is
+        // exactly what dng.zig targets, so we leave isAppleProRAWEnabled = false
+        // (the AVCapturePhotoOutput default) and select a Bayer format at capture.
+        output.isAppleProRAWEnabled = false
         output.maxPhotoQualityPrioritization = .quality
         configured = true
+        blog.info("camera: configured. bayerRAW=true videoTap=\(self.session.outputs.contains(self.videoOut)) maxBracket=\(self.output.maxBracketedCapturePhotoCount)")
     }
 
     // ── Bracketed RAW capture ────────────────────────────────────────────────
@@ -131,7 +137,16 @@ final class CameraController: NSObject {
     /// Fire one 4-frame RAW EV bracket; returns the 4 DNG blobs in capture order.
     func captureBracket() async throws -> [Data] {
         guard running else { throw CamError.capture("camera not started") }
-        guard let rawFormat = output.availableRawPhotoPixelFormatTypes.first else { throw CamError.noRAW }
+        // Pick a NAKED Bayer RAW format (raw CFA mosaic). With ProRAW off the
+        // available list is Bayer-only, but filter explicitly so we never pick a
+        // ProRAW/Linear format even if ProRAW is ever re-enabled upstream.
+        guard let rawFormat = output.availableRawPhotoPixelFormatTypes.first(where: {
+            AVCapturePhotoOutput.isBayerRAWPixelFormat($0)
+        }) else {
+            blog.error("camera: no available Bayer RAW pixel format")
+            throw CamError.noRAW
+        }
+        blog.info("camera: capturing \(self.biases.count)-frame RAW bracket biases=\(self.biases) rawFmt=\(rawFormat)")
 
         let clamped = biases   // device clamps internally; nominal offsets only
         let bracket = clamped.map {
@@ -143,6 +158,10 @@ final class CameraController: NSObject {
         let settings = AVCapturePhotoBracketSettings(rawPixelFormatType: rawFormat,
                                                      processedFormat: nil,
                                                      bracketedSettings: bracket)
+        // Bayer RAW REQUIRES .speed prioritization (AVCapturePhotoOutput Bayer-RAW
+        // rules); the default .balanced throws NSInvalidArgumentException at
+        // capturePhoto on device. RAW is unprocessed anyway, so .speed is correct.
+        settings.photoQualityPrioritization = .speed
         collected.removeAll(keepingCapacity: true)
         expected = bracket.count
 
@@ -166,8 +185,15 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
         // One callback per bracketed frame; collect DNG data until we have all 4.
         let data = photo.fileDataRepresentation()
         Task { @MainActor in
-            if let error { self.finish(.failure(CamError.capture("\(error)"))); return }
-            guard let data else { self.finish(.failure(CamError.capture("no DNG data"))); return }
+            if let error {
+                blog.error("camera: photo failed: \(error.localizedDescription, privacy: .public)")
+                self.finish(.failure(CamError.capture("\(error)"))); return
+            }
+            guard let data else {
+                blog.error("camera: photo produced no DNG data")
+                self.finish(.failure(CamError.capture("no DNG data"))); return
+            }
+            blog.info("camera: frame \(self.collected.count + 1)/\(self.expected) DNG \(data.count) bytes")
             self.collected.append(data)
             if self.collected.count >= self.expected { self.finish(.success(self.collected)) }
         }

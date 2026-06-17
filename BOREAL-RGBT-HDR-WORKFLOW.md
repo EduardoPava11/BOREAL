@@ -217,8 +217,8 @@ bk_demosaic_full(mosaic_f32, w, h, cfa, out_rgb_f32)             // §2 MHC full
 bk_build_cube_lut(*LookParams, grid, out_f32) / bk_emit_cube(...)// §4 64³ LUT baker + .cube emit
 bk_write_tiff_f32(w,h, pixels, icc, icc_len, buf, buf_len) / bk_tiff_size(...)  // §3 owned HDR TIFF
 ```
-**DNG decode is REUSED, not rebuilt.** `dng.zig` + `ljpeg.zig` (1,554 lines, on-device-verified ProRAW
-tiled multi-component LJPEG) already return a full-sensor u16 mosaic — the *decimating bin* was the
+**DNG decode is REUSED, not rebuilt.** `dng.zig` + `ljpeg.zig` (1,554 lines, on-device-verified tiled
+multi-component LJPEG Bayer RAW; ProRAW is deliberately NOT captured) already return a full-sensor u16 mosaic — the *decimating bin* was the
 64×64-era code, not the decoder, and the decoder is owned hand-written Zig. It was surgically EXTENDED
 with **AsShotNeutral** (tag 50728) → green-normalized `wb_r/wb_g/wb_b` on the mosaic, feeding §1.3's WB
 prior. (Rewriting a working LJPEG decoder from scratch would be all risk, no design gain.)

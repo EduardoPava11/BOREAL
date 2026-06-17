@@ -1,11 +1,11 @@
-//! TIFF/DNG parser scoped to what BOREAL writes: uncompressed 16-bit RGGB Bayer.
+//! TIFF/DNG parser for NAKED Bayer RAW (the raw CFA sensor mosaic) — 14/16-bit,
+//! RGGB or BGGR, with the raw mosaic in IFD0 (not a SubIFD, unlike Adobe DNGs).
+//! Accepts Compression=1 (uncompressed strips) AND Compression=7 (LJPEG SOF3
+//! tiles, as iPhone Bayer RAW ships); rejects Apple-processed ProRAW variants
+//! (Linear/demosaiced, 'vc8r' compressed Bayer, lossy DNG, deflate).
 //!
-//! Apple's iPhone Bayer RAW DNGs are big-endian (`MM\0*`); the raw mosaic lives
-//! in IFD0 (not a SubIFD, unlike Adobe-style DNGs). Compression is always 1 (none).
-//! See ~/BOREAL/BOREAL/Processing/DNGCropTagEditor.swift for the Swift companion
-//! that writes the crop tags this parser consumes.
-//!
-//! We only read the tags we need to extract a cropped u16 mosaic ready for binning.
+//! Apple's iPhone Bayer RAW DNGs are big-endian (`MM\0*`). We read only the tags
+//! needed to extract the cropped u16 mosaic + colour/exposure metadata.
 
 const std = @import("std");
 const ljpeg = @import("ljpeg.zig");

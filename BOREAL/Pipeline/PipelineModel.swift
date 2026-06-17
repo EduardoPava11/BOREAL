@@ -129,16 +129,22 @@ final class PipelineModel {
 
     /// Core off-main pipeline: decode ×4 → fuse → colour → demosaic → preview + TIFF + LUT.
     nonisolated static func runPipeline(_ datas: [Data], progress: @Sendable (String) -> Void) throws -> Output {
+        blog.info("runPipeline: \(datas.count) frames, sizes \(datas.map { $0.count })")
         var frames: [Kernel.Frame] = []
         for (i, data) in datas.enumerated() {
             progress("Decoding \(i + 1)/4…")
-            guard let f = Kernel.decodeDNG(data) else { throw Kernel.Failure.decode("frame \(i + 1)") }
+            let d = Kernel.decodeDNG(data)
+            guard let f = d.frame else {
+                throw Kernel.Failure.decode("frame \(i + 1): \(Kernel.statusName(d.status)) [\(d.status)]")
+            }
             frames.append(f)
         }
         let w = frames[0].width, h = frames[0].height
         guard frames.allSatisfy({ $0.width == w && $0.height == h }) else {
+            blog.error("dimension mismatch: \(frames.map { "\($0.width)x\($0.height)" })")
             throw Kernel.Failure.dimensionMismatch
         }
+        blog.info("decoded 4 frames \(w)×\(h); fusing → colour → TIFF/LUT")
         progress("Reading exposure…")
         // Per-frame relative exposure ratios from the SAME Zig source of truth the
         // fuse consumes (darkest = 1.0), so the EV label can't diverge from the
