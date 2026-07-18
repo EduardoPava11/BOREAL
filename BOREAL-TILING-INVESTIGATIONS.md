@@ -96,13 +96,59 @@ Q: L3's displacement dither is a tiling coloring — what structure
 (blue-noise tiles? STBN lineage) should govern it at the cube scale?
 Method: after I5; house 6teen3 STBN precedent; defer until V1 lands.
 
-## I8 — Literature synthesis (agent in flight)
+## I8 — Literature synthesis (LANDED 2026-07-17; primary-verified)
 
-Lattice/polyphase demosaicking (Alleysson, Dubois, Gunturk), CFA
-design as frequency packing (Hirakawa & Wolfe), quincunx pyramids,
-group-equivariant mosaicking, lapped transforms, multi-frame Bayer SR.
-Output: the design levers, folded here with citations; each mapped to
-I1-I7.
+THE FIVE LEVERS (if demosaic is a tiling problem):
+
+1. CARRIER PLACEMENT — error lives at the tiling's reciprocal-lattice
+   carriers. Bayer's specific weakness: the R-B chroma carriers sit ON
+   THE AXES at (0.5,0)/(0,0.5), colliding with dominant H/V luma
+   energy (false color); (0.5,0.5) carries the zipper. [Alleysson,
+   Susstrunk & Herault 2005 TIP; Dubois 2005 SPL + uOttawa CFA
+   project; Hirakawa & Wolfe 2008 TIP = CFA design as frequency-plane
+   packing; Li-Hao-Lin 2011 frequency-structure matrix.] This EXPLAINS
+   I0-B (fine-scale chroma-dominated residuals = the carriers our box
+   means never demultiplex) and gives I2 its reference: Dubois-style
+   ADAPTIVE CARRIER SELECTION (two redundant R-B copies; trust the
+   locally less-corrupted one) is the actionable fixed-RGGB move.
+   I0-A's left/right asymmetry may be axis-carrier crosstalk
+   (directional!) — I1 checks orientation dependence directly.
+
+2. LATTICE-MATCHED MULTIRESOLUTION — polyphase space-to-depth of the
+   2x2 tile (our N-law phase tensor, independently validated: it is
+   the standard learned-demosaic architecture move AND restores
+   shift-by-2 to shift-by-1 equivariance [Gharbi 2016 lineage; Chaman
+   & Dokmanic APS]); G wants DIAMOND-supported filters (quincunx
+   Nyquist cell) — a quincunx sqrt(2) step between the mosaic and the
+   first square rung [Kovacevic-Vetterli 1992; Kovacevic-Sweldens
+   lifting; Menon & Calvagno overview]. Feeds I3.
+
+3. SYMMETRY AS WEIGHT TYING + AUGMENTATION — operate modulo the Bayer
+   group: unify RGGB/BGGR by coset shift (crop), augment only with
+   phase-preserving flip+shift combos [Liu 2019 BayerUnifyAug, NTIRE
+   winner]. Feeds I4 its recipe.
+
+4. LAPPED TILING — never tile estimators with hard edges: halos sized
+   to the true receptive field give EXACT seamlessness [NIST tiled
+   inference]; else partition-of-unity windows [Malvar LOT 1988-89].
+   Feeds I5 its remedy shelf.
+
+5. TILING IN TIME — handheld tremor supplies sub-pixel offsets that
+   FILL THE EMPTY COSETS: aligned raw accumulation with NO demosaic
+   step at all [Wronski 2019 handheld SR, ships in Pixel; Farsiu-Elad-
+   Milanfar 2006: demosaic and SR are the SAME inverse problem;
+   Hasinoff 2016 HDR+]. Elevates I6: the burst is the cheapest way to
+   defeat the Bayer tiling's aliasing ENTIRELY — the cube's time axis
+   may be the anti-aliasing mechanism, not just presentation.
+
+NAMED GAPS (our investigations would be novel):
+  - no published quincunx-vs-square multiresolution head-to-head on
+    mosaicked data (I3 fills it);
+  - no true group-equivariant (G-CNN) demosaicker over the full Bayer
+    group (I4 fills it);
+  - no demosaic-specific tile-seam literature (I5 fills it).
+Unconfirmed: canonical dB advantage of optimized CFAs over Bayer
+(paper-dependent).
 
 ## What is frozen vs open while investigating
 
