@@ -18,7 +18,9 @@ module Main where
 
 import System.Exit (exitFailure)
 import Control.Monad (unless)
+import Boreal.ColorPath (quantizeLab)
 import Boreal.Geometry (gridSide)
+import Boreal.GifTarget (indexMap)
 import Boreal.Palette
 
 -- ── Rendering: index fields and displacement dither ────────────
@@ -123,6 +125,45 @@ lawDitherLocality =
       , inGrid q ]
   where inGrid (a, b) = a >= 0 && a < gridSide && b >= 0 && b < gridSide
 
+-- ── Bell-allocation laws (the 256² luminance requirement) ──────
+
+-- B1: the bell shape is exact — Σ = 256, symmetric, the sequence.
+lawBellShape :: Bool
+lawBellShape =
+  bellCounts == [1, 1, 2, 4, 8, 16, 32, 64, 64, 32, 16, 8, 4, 2, 1, 1]
+    && sum bellCounts == 256
+    && bellCounts == reverse bellCounts
+
+-- B2: the ends are EXACT black and EXACT white — through Q16 too.
+lawBellAnchors :: Bool
+lawBellAnchors =
+  labL (bellPalette 0) == 0 && labA (bellPalette 0) == 0
+    && labL (bellPalette 255) == 1 && labB (bellPalette 255) == 0
+    && quantizeLab (bellPalette 0) == (0, 0, 0)
+    && quantizeLab (bellPalette 255) == (65536, 0, 0)
+
+-- B3: luminance is monotone in index, and every interior color
+--     lies inside its own stratum's band [k/16, (k+1)/16).
+lawBellStrata :: Bool
+lawBellStrata = monotone && owned
+  where ls = [ labL (bellPalette i) | i <- [0 .. 255] ]
+        monotone = and (zipWith (<=) ls (drop 1 ls))
+        owned = and
+          [ let (k, _, _) = bellStratum i
+                l = labL (bellPalette i)
+            in l >= fromIntegral k / 16 && l < fromIntegral (k + 1) / 16
+          | i <- [1 .. 254] ]
+
+-- B4: the bell seed is injective and self-indexes as the identity
+--     (A2 survives the bell allocation).
+lawBellIdentity :: Bool
+lawBellIdentity =
+  injective && indexMap q16 q16 == [0 .. 255]
+  where q16 = [ quantizeLab (bellPalette i) | i <- [0 .. 255] ]
+        injective = and [ p /= q
+                        | (i, p) <- zip [0 :: Int ..] q16
+                        , (j, q) <- zip [0 ..] q16, i < j ]
+
 -- Sanity: the OKLab reference is anchored — white is (1,0,0) and
 -- gray is achromatic (golden values for ports to pin).
 lawOklabAnchors :: Bool
@@ -143,6 +184,10 @@ main = do
     [ ("L2 neighbor-Lipschitz (ΔE ≤ K on edges) + injective", lawNeighborLipschitz)
     , ("L1 home-centering exact; r=1 dither stays within r",  lawHomeCentering)
     , ("L3 dither-locality: ΔE ≤ K·(|du|+|dv|), |d|∞ ≤ 2",   lawDitherLocality)
+    , ("B1 bell shape: the sequence, Σ = 256, symmetric",     lawBellShape)
+    , ("B2 bell ends exact black/white, through Q16",          lawBellAnchors)
+    , ("B3 L monotone; every color owns its stratum band",     lawBellStrata)
+    , ("B4 bell seed injective; self-indexing = identity",     lawBellIdentity)
     , ("OKLab anchors: white → (1,0,0), gray achromatic",     lawOklabAnchors)
     ]
 

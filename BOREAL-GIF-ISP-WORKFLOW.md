@@ -136,11 +136,31 @@ NOT as a big bang:
 
 ## Phase 6 — Training (the learned ISP)
 
-- Per-rung NN demosaic replacing Phase 3's classic path, gated per rung:
-  >= +1 dB over the rung's CFA-bin baseline, judged in OKLab dE.
+THE MODEL (decided 2026-07-17): ONE H-JEPA-trained network that demosaics
+the square Bayer pattern and "sees" at every partition — 16x16, 32x32,
+64x64, 128x128, 256x256 — predicting directly into the LAB latent. Doing
+it at ALL levels is what makes the seed work: the 16x16 = 256 seeds the
+palette AND the coarsest view the model reasons from; the finer partitions
+are the JEPA's prediction targets (deterministic residual pyramid = the
+target; learned down = the model).
+
+THE BELL REQUIREMENT: by the 256x256 ceiling, the palette's LUMINANCE
+allocation must follow the bell over 16 strata:
+  1,1,2,4,8,16,32,64,64,32,16,8,4,2,1,1   (sum = 256)
+— ends pinned to exact black and exact white, mid-tones (where the eye
+lives) getting 64 colors apiece. Landed as laws B1-B4 (Boreal.Palette
+bellPalette + palette/PaletteGrid.hs): shape exact, anchors exact through
+Q16, luminance monotone with strict stratum ownership, and the bell seed
+still self-indexes as the identity (A2 survives). Training therefore has a
+LAWFUL TARGET: the learned seed is admissible only if its L histogram is
+the bell — the projection that closes the "real scenes aren't lawful"
+gap.
+
+- Per-rung gate unchanged: >= +1 dB over the rung's CFA-bin baseline in
+  OKLab dE. Bias-free nets (exact exposure equivariance composes with
+  Phase 2's per-frame normalization).
 - MLX on Mac; data = LAB-report bundles (real photons, replayable) +
-  synthetic mosaicked OKLab gradients; bias-free nets (exact exposure
-  equivariance composes with Phase 2's per-frame normalization).
+  synthetic mosaicked OKLab gradients with bell-lawful ground truth.
 - Deploy per Phase 5's decision (Metal kernel with baked weights is the
   proven pattern).
 
@@ -170,3 +190,11 @@ Runs through every phase, not after them:
   disagree before it's a defect, not a feature).
 - D4 Retirement depth: archive branch only, or also strip tiff/lut from
   the kernel build (default: keep in kernel, out of app).
+- D5 Bell-SOM reconciliation: the bell's sparse extremes are ISOLATED
+  colors by construction (one color covering a whole L band), so the
+  uniform seed's flat neighbor-Lipschitz bound (L2, K=0.06) cannot hold
+  verbatim on a bell-distributed grid. When the bell seed replaces the
+  uniform seed as the SOM reference, L2/L3 must become stratum-aware
+  (bound = hue term within a stratum + band-width term across strata).
+  Until decided, the uniform seed remains the L1-L3 reference and the
+  bell is the LUMINANCE-ALLOCATION law set (B1-B4).
