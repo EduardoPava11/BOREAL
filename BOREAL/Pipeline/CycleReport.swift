@@ -121,6 +121,17 @@ enum CycleReport {
                 urls.append(u)
             }
 
+            // The cycle's 4 PER-FRAME renders as a GIF (each frame
+            // EV-normalized by its own e_t — the temporal unit at 5 cs).
+            if !outcome.frameIndices.isEmpty,
+               outcome.frameIndices.allSatisfy({ $0.count == ceiling * ceiling }),
+               let gif = Kernel.gifEncode(frames: outcome.frameIndices, side: ceiling,
+                                          paletteRGB: palRGB, delayCs: 5) {
+                let u = dir.appendingPathComponent("cycle.gif")
+                try gif.write(to: u)
+                urls.append(u)
+            }
+
             for (i, dng) in dngs.enumerated() {
                 let u = dir.appendingPathComponent("frame_\(i + 1).dng")
                 try dng.write(to: u)

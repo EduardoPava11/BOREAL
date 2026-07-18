@@ -182,7 +182,30 @@ pub fn fuse(frames: [4][]const u16, out: []f32, p: FuseParams) void {
     }
 }
 
+/// Per-FRAME normalization (GIF-ISP per-frame rendering): one exposure's
+/// mosaic onto the common scene scale — lin = (raw − black)/(white − black),
+/// then divided by the frame's own relative exposure e_t (inv_e = 1/e_t).
+/// The same affine + 1-homogeneous algebra the fuse applies per sample
+/// (spec laws CQ6 + EV4); negatives clamp to 0 (below sensor black).
+pub fn normalizeMosaic(samples: []const u16, black: f32, white: f32, inv_e: f32, out: []f32) void {
+    const range = @max(white - black, 1.0);
+    const scale = inv_e / range;
+    for (samples, 0..) |s, i| {
+        out[i] = @max((@as(f32, @floatFromInt(s)) - black) * scale, 0.0);
+    }
+}
+
 // ── Tests (spec-first: §2 laws + the SIMD≡scalar gate) ─────────────────────
+
+test "normalizeMosaic: black→0, white→1/e, affine, clamped" {
+    var s = [4]u16{ 512, 16383, 8447, 100 }; // black, white, mid, below-black
+    var out: [4]f32 = undefined;
+    normalizeMosaic(&s, 512, 16383, 0.5, &out); // e_t = 2
+    try std.testing.expectEqual(@as(f32, 0), out[0]);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), out[1], 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), out[2], 1e-3);
+    try std.testing.expectEqual(@as(f32, 0), out[3]); // clamped
+}
 
 const testing = std.testing;
 

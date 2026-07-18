@@ -49,10 +49,20 @@ final class BurstController {
         let sigma: [Float]                   // 256 cells, row-major
     }
 
+    /// The 256-color seed palette as planar Q16 planes (the governing
+    /// palette for per-frame indexing — D1: the FIRST cycle's seed).
+    struct PaletteQ16: Sendable {
+        let L: [Int32]
+        let a: [Int32]
+        let b: [Int32]
+    }
+
     /// Per-cycle reduction outcome. `plan` is the ETTR solver's suggested EV
     /// vector for a FUTURE cycle (raw, unclamped — the loop applies the
-    /// P1-P4 mapping); `actualEV` is the cycle's EXIF-derived exposure ratios
-    /// (planned-vs-actual is the Phase 2 exit gate).
+    /// P1-P4 mapping); `actualEV` is the cycle's EXIF-derived exposure
+    /// ratios; `frameIndices` are the cycle's 4 PER-FRAME ceiling-rung GIF
+    /// index maps (each frame EV-normalized by its own e_t, multi-scale
+    /// demosaiced, indexed against the governing palette).
     struct Outcome: Sendable {
         let index: Int
         let ok: Bool
@@ -60,6 +70,7 @@ final class BurstController {
         let bands: Bands?
         let plan: [Float]?
         let actualEV: [Float]
+        let frameIndices: [[UInt8]]
     }
 
     enum Phase: Equatable {
@@ -76,6 +87,9 @@ final class BurstController {
     /// cycle, GCT = the first cycle's seed palette — D1 default). Published
     /// after .done when assembly succeeds.
     private(set) var gifURL: URL?
+    /// D1: the burst's ONE global palette — the first completed cycle's
+    /// seed. Later cycles' per-frame indexing reads it off the serial chain.
+    private var governingPalette: PaletteQ16?
 
     /// Reduction tasks by cycle index — the serial chain tail is the last value;
     /// awaiting tasks[i - maxInFlight] before capturing cycle i bounds memory.
@@ -99,6 +113,7 @@ final class BurstController {
         chainTail = nil
         timedOut = false
         gifURL = nil
+        governingPalette = nil
 
         let savedBiases = camera.biases
         defer { camera.biases = savedBiases }
@@ -152,35 +167,23 @@ final class BurstController {
         }.value
     }
 
-    /// Burst → GIF89a: decode each cycle's ceiling rung, index against the
-    /// governing palette, encode. 20 cs per cycle frame (16 cycles ≈ the
-    /// burst's own ~3.2 s duration); the 64-frame/5 cs contract arrives
-    /// with the per-frame rendering slice.
+    /// Burst → GIF89a: the 64-frame contract — every captured frame is its
+    /// own GIF frame (EV-normalized, multi-scale demosaiced, indexed against
+    /// the first cycle's seed) at 5 cs, so the loop replays the burst at
+    /// capture speed.
     nonisolated private static func assembleGIF(from outcomes: [Outcome]) -> URL? {
         let ok = outcomes.filter { $0.ok && $0.bands != nil }.sorted { $0.index < $1.index }
         guard let first = ok.first?.bands else { return nil }
-        let palL = Array(first.L[0..<256])
-        let palA = Array(first.a[0..<256])
-        let palB = Array(first.b[0..<256])
-        let palRGB = Kernel.oklabQ16ToSRGB8(L: palL, a: palA, b: palB)
+        let palRGB = Kernel.oklabQ16ToSRGB8(L: Array(first.L[0..<256]),
+                                            a: Array(first.a[0..<256]),
+                                            b: Array(first.b[0..<256]))
 
-        var frames: [[UInt8]] = []
-        var side = 0
-        for outcome in ok {
-            guard let bands = outcome.bands else { continue }
-            let r = bands.side
-            guard let iL = Kernel.msDecode(bands.L, mosaicSide: bands.mosaicSide, rung: r),
-                  let iA = Kernel.msDecode(bands.a, mosaicSide: bands.mosaicSide, rung: r),
-                  let iB = Kernel.msDecode(bands.b, mosaicSide: bands.mosaicSide, rung: r)
-            else { continue }
-            side = max(side, r)
-            frames.append(Kernel.indexMap(L: iL, a: iA, b: iB,
-                                          palL: palL, palA: palA, palB: palB))
-        }
-        guard !frames.isEmpty, side > 0,
+        let side = first.side
+        let frames = ok.flatMap(\.frameIndices)
+        guard !frames.isEmpty,
               frames.allSatisfy({ $0.count == side * side }),
               let gif = Kernel.gifEncode(frames: frames, side: side,
-                                         paletteRGB: palRGB, delayCs: 20)
+                                         paletteRGB: palRGB, delayCs: 5)
         else { return nil }
 
         let url = FileManager.default.temporaryDirectory
@@ -211,7 +214,10 @@ final class BurstController {
         let prev = chainTail
         let task = Task.detached(priority: .userInitiated) { [weak self] in
             await prev?.value                    // serial: one cycle reduces at a time
-            let outcome = Self.reduce(cycle)     // DNG data freed when `cycle` drops here
+            // The governing palette exists once cycle 0 has finished — the
+            // chain is serial, so any later cycle sees it here.
+            let governing = await MainActor.run { self?.governingPalette }
+            let outcome = Self.reduce(cycle, governing: governing)
             await MainActor.run { self?.finish(outcome) }
         }
         reductionTasks[cycle.index] = task
@@ -220,16 +226,22 @@ final class BurstController {
 
     private func finish(_ outcome: Outcome) {
         outcomes.append(outcome)
+        if governingPalette == nil, outcome.ok, let bands = outcome.bands {
+            governingPalette = PaletteQ16(L: Array(bands.L[0..<256]),
+                                          a: Array(bands.a[0..<256]),
+                                          b: Array(bands.b[0..<256]))
+        }
         blog.info("burst: cycle \(outcome.index + 1) reduced ok=\(outcome.ok) \(outcome.note, privacy: .public)")
     }
 
     /// The full L2 chain per cycle (BOREAL-16LAB-DESIGN.md):
     /// decode ×4 → crop S² → EV-aware fuse → demosaic → ProPhoto → linear
     /// box S²→256² → OKLab Q16 → pyramid ×3 → σ head.
-    nonisolated static func reduce(_ cycle: Cycle) -> Outcome {
+    nonisolated static func reduce(_ cycle: Cycle,
+                                   governing: PaletteQ16? = nil) -> Outcome {
         func fail(_ note: String) -> Outcome {
             Outcome(index: cycle.index, ok: false, note: note, bands: nil,
-                    plan: nil, actualEV: [1, 1, 1, 1])
+                    plan: nil, actualEV: [1, 1, 1, 1], frameIndices: [])
         }
 
         // 1. Decode (device-proven dng.zig path; EXIF rides along for fuse).
@@ -279,9 +291,34 @@ final class BurstController {
                           L: stacks.L, a: stacks.a, b: stacks.b,
                           sigma: sigmaGrid(mosaicSide: side,
                                            channels: [stacks.L, stacks.a, stacks.b]))
+
+        // PER-FRAME rendering (the 64-frame GIF contract): each frame
+        // EV-normalized by its OWN e_t → multi-scale encode → ceiling-rung
+        // decode → indexed against the governing palette (D1: the first
+        // cycle's seed; cycle 0 governs itself).
+        let pal = governing ?? PaletteQ16(L: Array(bands.L[0..<256]),
+                                          a: Array(bands.a[0..<256]),
+                                          b: Array(bands.b[0..<256]))
+        var frameIndices: [[UInt8]] = []
+        frameIndices.reserveCapacity(4)
+        for (j, frame) in cropped.enumerated() {
+            let invE = actualEV[j] > 0 ? 1 / actualEV[j] : 1
+            let mosaic = Kernel.normalizeMosaic(frame, invE: invE)
+            guard let fs = Kernel.msEncode(mosaic: mosaic, side: side,
+                                           cfa: ref.cfa, camToPP: ref.camToPP,
+                                           hasColor: ref.hasColor),
+                  let iL = Kernel.msDecode(fs.L, mosaicSide: side, rung: ceiling),
+                  let iA = Kernel.msDecode(fs.a, mosaicSide: side, rung: ceiling),
+                  let iB = Kernel.msDecode(fs.b, mosaicSide: side, rung: ceiling)
+            else { return fail("per-frame render failed at frame \(j + 1)") }
+            frameIndices.append(Kernel.indexMap(L: iL, a: iA, b: iB,
+                                                palL: pal.L, palA: pal.a, palB: pal.b))
+        }
+
         return Outcome(index: cycle.index, ok: true,
-                       note: "S=\(side) → multi-scale \(ceiling)² stack", bands: bands,
-                       plan: plan, actualEV: actualEV)
+                       note: "S=\(side) → multi-scale \(ceiling)² stack + 4 frames",
+                       bands: bands, plan: plan, actualEV: actualEV,
+                       frameIndices: frameIndices)
     }
 
     /// Largest 256·2^j ≤ min(width, height), capped at the spec canonical

@@ -438,6 +438,12 @@ void bk_oklab_q16_to_srgb8(const int32_t *px_l, const int32_t *px_a,
  * rung-r demosaic. Overcomplete by design: every residual is a JEPA
  * prediction target. bk_ms_stack_len(2048) == 87296. Caller owns all
  * buffers. Gated bit-exact by fixtures/multiscale_golden.json. */
+/* Per-frame normalization onto the common scene scale (per-frame GIF
+ * rendering): lin = (raw - black)/(white - black) * inv_e, clamped >= 0.
+ * The frame's inv_e = 1 / its relative exposure (bk_relative_exposures). */
+void bk_normalize_mosaic(const uint16_t *samples, size_t n, float black,
+                         float white, float inv_e, float *out);
+
 size_t bk_ms_stack_len(uint32_t side);
 int bk_ms_encode(const float *mosaic, uint32_t side, uint32_t cfa,
                  const float *cam_to_pp, bool has_color,

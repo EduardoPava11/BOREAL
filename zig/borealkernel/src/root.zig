@@ -628,6 +628,19 @@ export fn bk_oklab_q16_to_srgb8(
     giftarget.srgb8Batch(px_l[0..n_px], px_a[0..n_px], px_b[0..n_px], out[0 .. 3 * n_px]);
 }
 
+/// Per-frame normalization onto the common scene scale (per-frame GIF
+/// rendering): lin = (raw − black)/(white − black) · inv_e, clamped ≥ 0.
+export fn bk_normalize_mosaic(
+    samples: [*]const u16,
+    n: usize,
+    black: f32,
+    white: f32,
+    inv_e: f32,
+    out: [*]f32,
+) void {
+    fuse.normalizeMosaic(samples[0..n], black, white, inv_e, out[0..n]);
+}
+
 /// Multi-scale stack length for a mosaic side (Σ r² over its rungs).
 export fn bk_ms_stack_len(side: u32) usize {
     return multiscale.stackLen(side);

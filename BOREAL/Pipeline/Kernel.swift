@@ -207,6 +207,19 @@ enum Kernel {
         return ev
     }
 
+    /// Per-frame normalization onto the common scene scale (per-frame GIF
+    /// rendering): (raw − black)/(white − black) ÷ the frame's own e_t.
+    static func normalizeMosaic(_ f: Frame, invE: Float) -> [Float] {
+        var out = [Float](repeating: 0, count: f.samples.count)
+        f.samples.withUnsafeBufferPointer { p in
+            out.withUnsafeMutableBufferPointer { o in
+                bk_normalize_mosaic(p.baseAddress, f.samples.count,
+                                    f.black, f.white, invE, o.baseAddress)
+            }
+        }
+        return out
+    }
+
     // ── Multi-scale demosaic: the custom ISP (Phase 3, MS laws) ────────────
 
     /// The rungs a mosaic side supports (side%r == 0, side/r even, ≥ 2).
