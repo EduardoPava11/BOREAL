@@ -27,6 +27,7 @@ import Data.Word (Word32, Word64)
 import System.Directory (createDirectoryIfMissing)
 
 import Boreal.ColorPath
+import Boreal.CycleSet
 import Boreal.Exposure
 import Boreal.Geometry
 import Boreal.GifTarget
@@ -356,6 +357,31 @@ gifwireJson = jObj
         | s <- take 256 (iterate gwLcg 41) ] ]
     gwLcg s = s * 6364136223846793005 + 1442695040888963407 :: Integer
 
+-- ── Cycle-set fixture (Phase 6: the NN's input contract) ───────
+
+cyclesetJson :: String
+cyclesetJson = jObj
+  [ ("conventions", jObj
+      [ ("phases",  jStr "POSITIONAL, CFA-agnostic: phase 0 = (even,even), 1 = (even,odd), 2 = (odd,even), 3 = (odd,odd); plane_p[y][x] = mosaic[2y+py][2x+px]; exact bijection")
+      , ("tensor",  jStr "cycle tensor = 4 EV-normalized frames x 4 phases = 16 channels, frame-major: channel = 4*frame + phase; frames in capture order (green,red,blue,shadow once the ETTR plan governs)")
+      , ("meaning", jStr "RGGB: phase 0=R, 1=G, 2=G, 3=B; BGGR: phase 0=B, 3=R; color meaning is metadata, never geometry")
+      , ("keystone", jStr "cfaBin k=2 == { phase0, (phase1+phase2)/2, phase3 } per cell EXACTLY (RGGB) — the input contains the finest classic baseline verbatim (law N3)")
+      , ("normalization", jStr "each frame divided by its own relative exposure BEFORE decomposition (CQ6/EV4) — the tensor map is 1-homogeneous, exposure equivariance is inherited")
+      ])
+  , ("fixture", jObj
+      [ ("seed", show (11 :: Int))
+      , ("side", show (16 :: Int))
+      , ("mosaicF64", jDbls (map fromRational (concat csMosaic)))
+      , ("phases", jArr
+          [ jInts [ q16FromUnit v | row <- p, v <- row ]
+          | p <- phasePlanes csMosaic ])
+      , ("note", jStr "phases here are Q16-quantized (floor(v*65536+0.5)) purely to keep the golden integer-exact; the trainer decomposes the f32 mosaic positionally and must match after the same quantization")
+      ])
+  ]
+  where
+    csMosaic = mkMosaicUnit 11 16
+    q16FromUnit v = quantizeQ16 (fromRational v)
+
 -- ── Geometry fixture ───────────────────────────────────────────
 
 geometryJson :: String
@@ -386,6 +412,7 @@ main = do
   emit "giftarget_golden.json" giftargetJson
   emit "multiscale_golden.json" multiscaleJson
   emit "gifwire_golden.json" gifwireJson
+  emit "cycleset_golden.json" cyclesetJson
   writeFile "../BOREAL/Kernels/SRGBTable.swift" srgbTableSwift
   putStrLn "  wrote ../BOREAL/Kernels/SRGBTable.swift (generated)"
   putStrLn "GOLDENS EMITTED"

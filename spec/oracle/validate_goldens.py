@@ -364,6 +364,22 @@ def main():
     regif += [0x3B]
     assert regif == gw['gifBytes'], 'gifwire bytes drift'
 
+    # ── cycleset: positional phase decomposition (the NN input map) ──────
+    cs = json.load(open('cycleset_golden.json'))['fixture']
+    cside = cs['side']
+    cmos = [cs['mosaicF64'][i * cside:(i + 1) * cside] for i in range(cside)]
+    half = cside // 2
+    for p, (py, px) in enumerate([(0, 0), (0, 1), (1, 0), (1, 1)]):
+        got = [q16(cmos[2 * y + py][2 * x + px])
+               for y in range(half) for x in range(half)]
+        assert got == cs['phases'][p], f'phase {p} drift'
+    # bijection: reassembling the planes recovers the mosaic (positionally)
+    for y in range(cside):
+        for x in range(cside):
+            p = (y % 2) * 2 + (x % 2)
+            idx = (y // 2) * half + (x // 2)
+            assert q16(cmos[y][x]) == cs['phases'][p][idx]
+
     print('ORACLE GREEN: all fixtures match independent re-computation')
 
 

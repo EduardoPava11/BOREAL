@@ -16,8 +16,9 @@ COLORPATH = colorpath/ColorQuant.hs
 GIFTARGET = giftarget/GifIndex.hs
 MULTISCALE = multiscale/MultiScaleLaws.hs
 GIFWIRE   = gifwire/GifWireLaws.hs
+CYCLESET  = cycleset/CycleSetLaws.hs
 
-CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE)
+CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET)
 
 # ── Targets ──────────────────────────────────────────────
 
