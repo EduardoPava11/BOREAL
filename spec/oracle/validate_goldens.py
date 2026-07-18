@@ -380,6 +380,31 @@ def main():
             idx = (y // 2) * half + (x // 2)
             assert q16(cmos[y][x]) == cs['phases'][p][idx]
 
+    # ── binomial: the V1 objective statistic, from the conventions ───────
+    bn = json.load(open('binomial_golden.json'))
+    for f in bn['fixtures']:
+        n = f['n']
+        if isinstance(f['indices'], list):
+            idx = f['indices']
+        else:                                        # 'lcg': re-derive
+            idx, s = [], f['seed']
+            for _ in range(n):
+                idx.append((s // 65536) % 256)
+                s = (s * 6364136223846793005 + 1442695040888963407) % (1 << 64)
+                s = s - (1 << 64) if s >= (1 << 63) else s
+            # Haskell Integer LCG never wraps: recompute unbounded
+            idx, s = [], f['seed']
+            for _ in range(n):
+                idx.append((s // 65536) % 256)
+                s = s * 6364136223846793005 + 1442695040888963407
+        counts = [0] * 256
+        for i in idx:
+            counts[i] += 1
+        assert counts == f['counts'], f"binomial counts drift: {f['name']}"
+        exp = n / 256
+        chi2 = sum((c - exp) ** 2 for c in counts) * 256 / n
+        assert chi2 == f['chi2F64'], f"binomial chi2 drift: {f['name']}"
+
     print('ORACLE GREEN: all fixtures match independent re-computation')
 
 

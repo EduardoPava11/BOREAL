@@ -131,6 +131,25 @@ if let gpu = MetalIndexMapper.shared {
     print("  metal: no device — GPU parity SKIPPED")
 }
 
+// Binomial statistic (the V1 objective) — bit-exact vs the golden.
+// Fixtures with stored indices verify histogram + χ²; the large LCG
+// fixture (indices not stored; Haskell Integer LCG is unbounded)
+// verifies the statistic from its stored counts.
+let bn = loadJSON("\(dir)/binomial_golden.json")
+for f in bn["fixtures"] as! [[String: Any]] {
+    let goldenCounts = (f["counts"] as! [Any]).map { Int(truncating: $0 as! NSNumber) }
+    let wantChi2 = (f["chi2F64"] as! NSNumber).doubleValue
+    if let arr = f["indices"] as? [Any] {
+        let idx = arr.map { UInt8(truncating: $0 as! NSNumber) }
+        if BorealKernels.usageHistogram(idx) != goldenCounts {
+            die("binomial counts drift: \(f["name"] ?? "?")")
+        }
+    }
+    if BorealKernels.chiSquare(counts: goldenCounts) != wantChi2 {
+        die("binomial chi2 drift: \(f["name"] ?? "?")")
+    }
+}
+
 if !BorealKernels.fuseSelfTest() { die("fuse self-test failed") }
 if !BorealKernels.sceneSelfTest() { die("scene self-test failed") }
 if !BorealKernels.dngSelfTest() { die("DNG self-test failed") }

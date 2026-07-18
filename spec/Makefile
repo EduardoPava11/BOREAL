@@ -17,8 +17,9 @@ GIFTARGET = giftarget/GifIndex.hs
 MULTISCALE = multiscale/MultiScaleLaws.hs
 GIFWIRE   = gifwire/GifWireLaws.hs
 CYCLESET  = cycleset/CycleSetLaws.hs
+BINOMIAL  = binomial/BinomialLaws.hs
 
-CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET)
+CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL)
 
 # ── Targets ──────────────────────────────────────────────
 

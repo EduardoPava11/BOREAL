@@ -1,10 +1,43 @@
 # BOREAL NN Design — the multi-scale H-JEPA demosaicer
 
-Status 2026-07-17: designed. Input contract is LAW (CycleSet N1-N5, gate
-green); output contract is LAW (MS + B laws); runtime research done
-(Core AI, WWDC26 sessions 324/325/326/330). Not yet trained.
+Status 2026-07-17: designed; V1 SCOPED (below). Input contract is LAW
+(CycleSet N1-N5); output contract is LAW (MS + B laws); the V1 objective
+is LAW (Binomial V1a-V1e); runtime research done (Core AI, WWDC26
+sessions 324/325/326/330). Not yet trained.
 
-## 1. What the network is
+## 0. The frame: a stack of EQUIVALENT ENCODERS, and V1 bare bones
+
+The rungs are not levels of one encoder — they are a FAMILY of
+equivalent encoders of the same scene at different debayer resolutions
+(each rung its own demosaic; MS laws). The H-JEPA is the WIRING between
+them: deterministic up (nearest replication), learned down (predict the
+finer encoding from the coarser), latent prediction never pixel
+reconstruction. What is learned, concretely, is GIF structure: build an
+index map, use the 16x16 color palette.
+
+**V1 is bare bones and does ONE thing very, very well: the binomial
+approximation at 16x16 colors.** V1 = a palette encoder. Given a
+frame's cycle tensor it emits ONLY the seed — 256 OKLab colors on the
+16x16 grid — judged by three numbers:
+
+  1. χ² of the ceiling index map's usage histogram vs B(n, 1/256)
+     (Binomial laws; 0 = balanced = the A2 permutation ideal). Balanced
+     usage = maximal entropy of the 8-bit index stream = the palette
+     EARNS all 256 codes — V1 optimizes the rate of the pipeline's one
+     lossy stage.
+  2. Bell admissibility of the seed's luminance (B laws; exact rank
+     projection downstream keeps it lawful by construction).
+  3. Mean ΔE of the ceiling frame indexed against the seed (quality).
+
+Everything else — per-rung residual heads, temporal prediction, latent
+reasoning — is V2+, and the wiring below is designed so V1's interfaces
+never move: perfect the 16x16 per frame first; latent reasoning then has
+a substrate whose every frame is a near-permutation of its own palette,
+which is exactly when reasoning over indices IS reasoning over the
+scene. The report.json "binomial" section already measures today's
+classic seeds per rung — V1's baseline numbers come from every capture.
+
+## 1. What the network is (the full design V1 grows into)
 
 ONE network that demosaics the square Bayer pattern by "seeing" at every
 partition 16/32/64/128/256, seeded by the 16x16 = 256, predicting directly

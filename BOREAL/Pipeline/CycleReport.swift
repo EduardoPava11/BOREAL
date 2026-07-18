@@ -94,6 +94,17 @@ enum CycleReport {
             json["indexMaps"] = Dictionary(uniqueKeysWithValues:
                 indexMaps.map { (String($0.key), $0.value.map(Int.init)) })
 
+            // The binomial readout (V1's objective, live): per rung, how
+            // close this scene + seed sit to balanced usage. χ² = 0 is the
+            // A2 permutation; 255·n is one-color collapse.
+            json["binomial"] = Dictionary(uniqueKeysWithValues:
+                indexMaps.map { rung, indices in
+                    (String(rung), [
+                        "counts": BorealKernels.usageHistogram(indices),
+                        "chi2": BorealKernels.indexChiSquare(indices),
+                    ] as [String: Any])
+                })
+
             let jsonURL = dir.appendingPathComponent("report.json")
             let data = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
             try data.write(to: jsonURL)

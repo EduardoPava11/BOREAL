@@ -26,6 +26,7 @@ import Data.Ratio (denominator, numerator)
 import Data.Word (Word32, Word64)
 import System.Directory (createDirectoryIfMissing)
 
+import Boreal.Binomial
 import Boreal.ColorPath
 import Boreal.CycleSet
 import Boreal.Exposure
@@ -382,6 +383,39 @@ cyclesetJson = jObj
     csMosaic = mkMosaicUnit 11 16
     q16FromUnit v = quantizeQ16 (fromRational v)
 
+-- ── Binomial fixture (the V1 objective statistic) ──────────────
+
+binomialJson :: String
+binomialJson = jObj
+  [ ("conventions", jObj
+      [ ("chi2", jStr "chi^2 = sum_j (c_j - n/256)^2 * 256 / n over the 256-count usage histogram; 0 = balanced (the A2 permutation at n=256); one-color collapse = 255*n; frame sizes 256*4^k make chi^2 dyadic => f64 bit-exact")
+      , ("v1",   jStr "V1 is judged by this number (with the bell and dE): balanced usage = maximal index-stream entropy = the palette earns all 256 codes")
+      ])
+  , ("fixtures", jArr
+      [ binFx "identity" [0 .. 255]
+      , binFx "collapse256" (replicate 256 0)
+      , binFx "lcg4096" (binLcg 7 4096)
+      , binFx "lcg65536" (binLcg 9 65536)
+      ])
+  ]
+  where
+    binFx name xs = jObj
+      [ ("name", jStr name)
+      , ("n", show (length xs))
+      , ("indices", if length xs <= 4096 then jInts xs else jStr "lcg")
+      , ("seed", show (binSeed name))
+      , ("counts", jInts (usageHistogram xs))
+      , ("chi2F64", show (fromRational (indexChiSquare xs) :: Double))
+      ]
+    binSeed n = case n of
+      "lcg4096"  -> 7 :: Int
+      "lcg65536" -> 9
+      _          -> 0
+    binLcg seed n =
+      [ fromIntegral ((s `div` 65536) `mod` 256)
+      | s <- take n (iterate (\x -> x * 6364136223846793005
+                                      + 1442695040888963407) (fromIntegral seed :: Integer)) ]
+
 -- ── Geometry fixture ───────────────────────────────────────────
 
 geometryJson :: String
@@ -413,6 +447,7 @@ main = do
   emit "multiscale_golden.json" multiscaleJson
   emit "gifwire_golden.json" gifwireJson
   emit "cycleset_golden.json" cyclesetJson
+  emit "binomial_golden.json" binomialJson
   writeFile "../BOREAL/Kernels/SRGBTable.swift" srgbTableSwift
   putStrLn "  wrote ../BOREAL/Kernels/SRGBTable.swift (generated)"
   putStrLn "GOLDENS EMITTED"
