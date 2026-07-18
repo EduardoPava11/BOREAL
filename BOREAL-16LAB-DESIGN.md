@@ -203,7 +203,33 @@ steps). LeJEPA recipe (no EMA teacher, single hyperparameter) on in-domain
 bursts. The FP tensor units (A19 GPU neural accelerators) serve only the
 learned direction; the exact encoder stays integer.
 
-## ABI summary (all caller-owns-memory, C ABI via BorealKernel.h)
+## The encoding spine: DNG -> compression (the start of everything)
+
+Per frame, as shipped (pure Swift/Metal; stage 4 is what the NN replaces):
+
+  stage                     size            loss                    law
+  1 DNG bytes               ~25 MB          -                       -
+  2 LJPEG decode -> u16     25.5 MB         NONE (lossless pred.)   self-tests
+  3 crop 2048^2             8.4 MB          discards 67% of area    CS1
+  4 EV-normalize -> f32     16.8 MB         affine, exact structure CQ6/EV1-5
+  5 multi-scale stack       1.05 MB         per-cell means per rung MS1-4
+    (87,296 x i32 x 3; overcomplete; prefix = any rung)
+  6 OKLab + Q16             (in 5)          <= 1/131072 per coord   CQ1-5
+  7 palette + index map     64 KB           THE lossy step: dE to   G1-6, B1-4
+    (seed 16^2 = 256 scene-adaptive colors; i64 argmin)
+  8 LZW fixed-9 wire        74.3 KB         none (+13% for          W1-5
+                                            determinism)
+
+Rate: one frame 25 MB -> 74 KB (~340:1); a 64-frame burst ~1.6 GB of
+DNGs -> a 4.76 MB looping GIF. Compression happens in exactly two
+places: stage 5 chooses WHAT each scale keeps (channel means per cell -
+the classic path; the NN's whole job is choosing better), and stage 7
+collapses 96 bits/px to 8 by quantizing onto the scene's own seed
+palette (bell-shaped in luminance so the error budget sits where the
+eye lives). Stage 8 deliberately does NOT compress: the fixed-9-bit
+LZW buys byte determinism and a closed-form length for 13% rate. The
+residual stacks (near-zero by construction) are the future record
+format's entropy-coding substrate - a rate lever the GIF never needs.
 
 ```
 bk_status_t bk_pyramid_analyze  (const i32 *img,   u32 side, u32 base, i32 *bands, i32 *scratch)
