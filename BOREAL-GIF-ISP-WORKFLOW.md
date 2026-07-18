@@ -110,29 +110,31 @@ Demosaic AT each scale, not full-res-then-box. This redefines the pyramid:
 - Exit gate: a burst on device produces one .gif file; decode-with-
   system-decoder == our decode (round-trip law); AirDrop shares it.
 
-## Phase 5 — Runtime evaluation: Swift SIMT + Metal vs Zig
+## Phase 5 — Swift + Metal migration (DECREE: Zig is dropped)
 
-Direction to evaluate (Daniel's lean: Swift SIMT/Metal better for iPhone;
-SixFour executed exactly this pivot). Do it with numbers, not vibes, and
-NOT as a big bang:
+Daniel's call, made twice (SixFour precedent, reaffirmed 2026-07-17):
+this is a Swift and Metal app. Not a benchmark question. The spec +
+goldens are language-neutral by design, so every port is gated bit-exact
+before cutover. Never propose Zig for BOREAL again.
 
-- Measure first (device, Phase 2-4 workloads): per-64-frame-burst cost of
-  (a) index maps 64 x 65k px x 256 palette, (b) multi-scale demosaic,
-  (c) OKLab Q16, in current Zig vs a Metal compute port vs Swift+SIMD.
-- Expected split (to be confirmed by the numbers):
-    Metal compute  — per-pixel parallel hot path (demosaic, index map,
-                     OKLab) at 64x256^2 scale; integer ops stay integer
-                     in-shader so determinism holds (DeterministicRenderer
-                     precedent); golden parity via the same fixtures.
-    Swift + SIMD   — glue, per-cycle analysis, anything MainActor-adjacent.
-    Zig stays      — DNG parse/LJPEG decode (1554 device-proven lines,
-                     cold path, porting = all risk no gain — the same
-                     argument that kept dng.zig through the last pivot).
-- The Haskell spec + goldens are language-neutral BY DESIGN — a port
-  target change costs re-porting kernels, never re-deriving contracts.
-  Fixture tests gate any migrated kernel bit-exact before cutover.
-- Exit gate: a one-page decision record with measured numbers; migrate
-  only kernels the numbers indict.
+- M1 (DONE 2026-07-17): the live 16-LAB kernels ported to pure Swift
+  `BOREAL/Kernels/` (enum BorealKernels): owned cbrt + OKLab + Q16,
+  multi-scale encode/decode, normalize, index map, sRGB display path
+  (generated SRGBTable.swift), GIF89a wire. Verified by the new
+  `make -C spec swift-verify` gate leg (swiftc harness against the SAME
+  goldens — 4-language parity: Haskell = Python = Zig = Swift, all
+  bit/byte-exact). App facade switched; the product path is Swift.
+- M2: Metal compute for the hot pair (msEncode rung means, index map)
+  at 64-frame burst load; integer/f64 conventions preserved in-shader;
+  same fixture parity before cutover.
+- M3: port fuse, scene (ETTR), demosaic MHC, color to Swift.
+- M4: the DNG/LJPEG decoder LAST (1554 device-proven lines). Preferred
+  route: the 6teen3 CVPixelBuffer capture path removes the decoder from
+  the hot path entirely; Import/sim still needs one - port or replace
+  then. Off-product-path kernels (S-transform pyramid, box reduce) port
+  opportunistically.
+- M5: delete zig/ + build scripts once M3/M4 are green (git history
+  preserves; binomial.zig user WIP goes to a branch first).
 
 ## Phase 6 — Training (the learned ISP)
 

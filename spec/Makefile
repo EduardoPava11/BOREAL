@@ -27,9 +27,17 @@ CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(
 emit:
 	$(RUNGHC) $(FLAGS) emit/EmitGoldens.hs
 
-# The full gate: laws → fixtures → independent Python oracle.
+# Swift kernel parity: compile the app's pure-Swift kernels against the
+# same goldens (Phase 5: Swift + Metal is the kernel language).
+swift-verify:
+	@mkdir -p _build
+	swiftc -O ../BOREAL/Kernels/*.swift verify-swift/main.swift -o _build/verify-swift
+	_build/verify-swift ../zig/borealkernel/fixtures
+
+# The full gate: laws → fixtures → Python oracle → Swift kernels.
 gate: test emit
 	python3 oracle/validate_goldens.py
+	$(MAKE) swift-verify
 
 test:
 	@echo "════ BOREAL Spec Suite ════"

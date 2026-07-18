@@ -210,64 +210,29 @@ enum Kernel {
     /// Per-frame normalization onto the common scene scale (per-frame GIF
     /// rendering): (raw − black)/(white − black) ÷ the frame's own e_t.
     static func normalizeMosaic(_ f: Frame, invE: Float) -> [Float] {
-        var out = [Float](repeating: 0, count: f.samples.count)
-        f.samples.withUnsafeBufferPointer { p in
-            out.withUnsafeMutableBufferPointer { o in
-                bk_normalize_mosaic(p.baseAddress, f.samples.count,
-                                    f.black, f.white, invE, o.baseAddress)
-            }
-        }
-        return out
+        BorealKernels.normalizeMosaic(samples: f.samples, black: f.black,
+                                      white: f.white, invE: invE)
     }
 
     // ── Multi-scale demosaic: the custom ISP (Phase 3, MS laws) ────────────
 
     /// The rungs a mosaic side supports (side%r == 0, side/r even, ≥ 2).
-    static func msRungs(side: Int) -> [Int] {
-        [16, 32, 64, 128, 256].filter {
-            side % $0 == 0 && (side / $0) >= 2 && (side / $0) % 2 == 0
-        }
-    }
+    static func msRungs(side: Int) -> [Int] { BorealKernels.msRungs(side: side) }
 
-    static func msStackLen(side: Int) -> Int { bk_ms_stack_len(UInt32(side)) }
+    static func msStackLen(side: Int) -> Int { BorealKernels.msStackLen(side: side) }
 
     /// Normalized f32 mosaic → per-channel residual stacks in Q16 OKLab.
     /// Each rung is its OWN demosaic; a prefix decodes to that rung exactly.
     static func msEncode(mosaic: [Float], side: Int, cfa: UInt32,
                          camToPP: [Float], hasColor: Bool)
         -> (L: [Int32], a: [Int32], b: [Int32])? {
-        let n = msStackLen(side: side)
-        guard n > 0, mosaic.count >= side * side else { return nil }
-        let matrix = camToPP.count == 9 ? camToPP : [1, 0, 0, 0, 1, 0, 0, 0, 1]
-        var L = [Int32](repeating: 0, count: n)
-        var A = [Int32](repeating: 0, count: n)
-        var B = [Int32](repeating: 0, count: n)
-        let status = mosaic.withUnsafeBufferPointer { m in
-            matrix.withUnsafeBufferPointer { c in
-                L.withUnsafeMutableBufferPointer { l in
-                    A.withUnsafeMutableBufferPointer { a in
-                        B.withUnsafeMutableBufferPointer { b in
-                            bk_ms_encode(m.baseAddress, UInt32(side), cfa,
-                                         c.baseAddress, hasColor,
-                                         l.baseAddress, a.baseAddress, b.baseAddress)
-                        }
-                    }
-                }
-            }
-        }
-        return status == 0 ? (L, A, B) : nil
+        BorealKernels.msEncode(mosaic: mosaic, side: side, cfa: cfa,
+                               camToPP: camToPP, hasColor: hasColor)
     }
 
     /// Decode one channel's prefix back to the rung-r demosaic (MS3).
     static func msDecode(_ bands: [Int32], mosaicSide: Int, rung: Int) -> [Int32]? {
-        var out = [Int32](repeating: 0, count: rung * rung)
-        let status = bands.withUnsafeBufferPointer { b in
-            out.withUnsafeMutableBufferPointer { o in
-                bk_ms_decode(b.baseAddress, UInt32(mosaicSide), UInt32(rung),
-                             o.baseAddress)
-            }
-        }
-        return status == 0 ? out : nil
+        BorealKernels.msDecode(bands, mosaicSide: mosaicSide, rung: rung)
     }
 
     // ── GIF89a wire (Phase 4, laws W1-W5) ──────────────────────────────────
@@ -277,22 +242,8 @@ enum Kernel {
     /// loop. Deterministic fixed-9-bit LZW; nil on bad input.
     static func gifEncode(frames: [[UInt8]], side: Int, paletteRGB: [UInt8],
                           delayCs: Int) -> Data? {
-        guard !frames.isEmpty, paletteRGB.count >= 768,
-              frames.allSatisfy({ $0.count == side * side }) else { return nil }
-        let flat = frames.flatMap { $0 }
-        let cap = bk_gif_encoded_len(UInt32(side), UInt32(frames.count))
-        var out = [UInt8](repeating: 0, count: cap)
-        let written = flat.withUnsafeBufferPointer { f in
-            paletteRGB.withUnsafeBufferPointer { p in
-                out.withUnsafeMutableBufferPointer { o in
-                    bk_gif_encode(f.baseAddress, UInt32(frames.count), UInt32(side),
-                                  p.baseAddress, UInt32(delayCs),
-                                  o.baseAddress, cap)
-                }
-            }
-        }
-        guard written == cap else { return nil }
-        return Data(out)
+        BorealKernels.gifEncode(frames: frames, side: side, gct: paletteRGB,
+                                delayCs: delayCs)
     }
 
     /// Nearest-neighbor index upscale r² → target² (replication; the honest
@@ -377,33 +328,13 @@ enum Kernel {
     /// planar seed palette → u8 indices (i64 argmin, ties → lowest).
     static func indexMap(L: [Int32], a: [Int32], b: [Int32],
                          palL: [Int32], palA: [Int32], palB: [Int32]) -> [UInt8] {
-        var out = [UInt8](repeating: 0, count: L.count)
-        L.withUnsafeBufferPointer { pl in a.withUnsafeBufferPointer { pa in
-            b.withUnsafeBufferPointer { pb in palL.withUnsafeBufferPointer { ql in
-                palA.withUnsafeBufferPointer { qa in palB.withUnsafeBufferPointer { qb in
-                    out.withUnsafeMutableBufferPointer { o in
-                        bk_index_map(pl.baseAddress, pa.baseAddress, pb.baseAddress, L.count,
-                                     ql.baseAddress, qa.baseAddress, qb.baseAddress, o.baseAddress)
-                    }
-                }}
-            }}
-        }}
-        return out
+        BorealKernels.indexMap(L: L, a: a, b: b, palL: palL, palA: palA, palB: palB)
     }
 
     /// Display path: planar Q16 OKLab → interleaved sRGB8 bytes (3n), via the
     /// generated normative encode table (deterministic, never pow at runtime).
     static func oklabQ16ToSRGB8(L: [Int32], a: [Int32], b: [Int32]) -> [UInt8] {
-        var out = [UInt8](repeating: 0, count: 3 * L.count)
-        L.withUnsafeBufferPointer { pl in a.withUnsafeBufferPointer { pa in
-            b.withUnsafeBufferPointer { pb in
-                out.withUnsafeMutableBufferPointer { o in
-                    bk_oklab_q16_to_srgb8(pl.baseAddress, pa.baseAddress, pb.baseAddress,
-                                          L.count, o.baseAddress)
-                }
-            }
-        }}
-        return out
+        BorealKernels.oklabQ16ToSRGB8(L: L, a: a, b: b)
     }
 
     /// Encode interleaved RGB f32 as a 32-bit-float HDR TIFF, optionally tagging

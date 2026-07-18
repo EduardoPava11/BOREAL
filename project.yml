@@ -28,6 +28,7 @@ targets:
       # are headers (found via HEADER_SEARCH_PATHS), not sources.
       - path: BOREAL/App
       - path: BOREAL/Capture
+      - path: BOREAL/Kernels
       - path: BOREAL/Pipeline
       - path: BOREAL/Review
       - path: BOREAL/Shared
