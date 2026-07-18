@@ -27,4 +27,22 @@ extension BorealKernels {
     static func indexChiSquare(_ indices: [UInt8]) -> Double {
         chiSquare(counts: usageHistogram(indices))
     }
+
+    /// The hierarchical statistic (spec/Boreal/PatchGrid.hs): the ceiling
+    /// factorizes as (16×16)×(16×16) — mean over p of the share of patch
+    /// p's pixels using color p. 1 = perfect H (up of the A2 identity);
+    /// one-color collapse = exactly 1/256. Denominators are powers of two,
+    /// so the Double is exact. nil unless the frame is 256².
+    static func homeShare(_ indices: [UInt8]) -> Double? {
+        guard indices.count == 65536 else { return nil }
+        var own = 0
+        for y in 0..<256 {
+            let v = y / 16
+            for x in 0..<256 {
+                let p = v * 16 + x / 16
+                if Int(indices[y * 256 + x]) == p { own += 1 }
+            }
+        }
+        return Double(own) / 65536
+    }
 }

@@ -15,10 +15,30 @@ finer encoding from the coarser), latent prediction never pixel
 reconstruction. What is learned, concretely, is GIF structure: build an
 index map, use the 16x16 color palette.
 
-**V1 is bare bones and does ONE thing very, very well: the binomial
-approximation at 16x16 colors.** V1 = a palette encoder. Given a
-frame's cycle tensor it emits ONLY the seed — 256 OKLab colors on the
-16x16 grid — judged by three numbers:
+**THE SHAPE (Daniel, 2026-07-17): (16x16) x (16x16) = 256x256 — V1 IS
+H.** The ceiling frame factorizes exactly as a 16x16 outer grid of
+16x16 inner patches (y = 16v+j, x = 16u+i), and the outer grid IS the
+seed's grid: each seed cell is the coarse latent OF ITS OWN PATCH (A2,
+squared). The arithmetic closes: balanced usage gives every color
+n/256 = 256 pixels = one patch's area — the binomial ideal and
+home-centering meet at one fixed point (patch p speaking mostly color
+p), and the deterministic up-arrow maps level-0 perfection to level-1
+perfection (up of the identity seed == the perfect-H ceiling, law H4).
+Landed as laws H1-H5 (Boreal.PatchGrid); the report's binomial section
+now carries homeShare at the ceiling — every capture measures how H
+the classic path already is.
+
+So V1 is not a flat palette head — it is the SMALLEST H-JEPA: two
+levels of the same 16x16 shape, one jump. A seed encoder produces 256
+cell latents; the palette head reads a color off each; a SHARED patch
+predictor (one network, 256 applications) predicts each cell's inner
+16x16 in latent — the JEPA's learned down at the seed->ceiling jump —
+and the assembled prediction is indexed against the palette. Middle
+rungs (32/64/128) are V2 refinements of the SAME jump; nothing about
+V1's two-level interface moves.
+
+**V1 does ONE thing very, very well: the binomial approximation at
+16x16 colors** — judged by these numbers:
 
   1. χ² of the ceiling index map's usage histogram vs B(n, 1/256)
      (Binomial laws; 0 = balanced = the A2 permutation ideal). Balanced

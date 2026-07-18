@@ -99,10 +99,17 @@ enum CycleReport {
             // A2 permutation; 255·n is one-color collapse.
             json["binomial"] = Dictionary(uniqueKeysWithValues:
                 indexMaps.map { rung, indices in
-                    (String(rung), [
+                    var entry: [String: Any] = [
                         "counts": BorealKernels.usageHistogram(indices),
                         "chi2": BorealKernels.indexChiSquare(indices),
-                    ] as [String: Any])
+                    ]
+                    // At the ceiling, the (16×16)×(16×16) factorization
+                    // adds the H statistic: how much each patch already
+                    // speaks its own cell's color (1 = perfect H).
+                    if let hs = BorealKernels.homeShare(indices) {
+                        entry["homeShare"] = hs
+                    }
+                    return (String(rung), entry)
                 })
 
             let jsonURL = dir.appendingPathComponent("report.json")

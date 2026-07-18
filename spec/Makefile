@@ -18,8 +18,9 @@ MULTISCALE = multiscale/MultiScaleLaws.hs
 GIFWIRE   = gifwire/GifWireLaws.hs
 CYCLESET  = cycleset/CycleSetLaws.hs
 BINOMIAL  = binomial/BinomialLaws.hs
+HIERARCHY = hierarchy/HierarchyLaws.hs
 
-CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL)
+CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY)
 
 # ── Targets ──────────────────────────────────────────────
 
