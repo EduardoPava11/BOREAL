@@ -1,5 +1,11 @@
 # BOREAL V1-Cube Workflow — improve the app, model-first
 
+STATUS: NOT SETTLED (Daniel, 2026-07-17): de-Bayer is a TILING problem.
+BOREAL-TILING-INVESTIGATIONS.md (I0-I8) must resolve before the K-laws
+and the cube's tiling shapes harden. I0 already found real signal:
+up-tile anisotropy and fine-scale chroma aliasing in the device bundle.
+The frozen/open split is listed at the end of the investigations doc.
+
 Aligned with Daniel 2026-07-17. Target unchanged: 64 DNGs in sets of 4.
 The product grows into the PIXEL CUBE:
 
