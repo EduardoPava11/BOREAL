@@ -61,6 +61,27 @@ lawDyadicExact =
       | (s, n) <- [(3, 256), (5, 1024), (7, 4096), (9, 65536)] ]
   where isPow2 d = d == until (>= d) (* 2) 1   -- smallest 2^k ≥ d equals d
 
+-- V1f — THE BEAUTY BAND (Daniel's criterion; FLAG_BEAUTY lineage):
+--   beauty is FIT TO THE BINOMIAL, not uniformity. A fair random
+--   assignment has E[chi^2] = 255·(255/256) ~ 254; perfectly equal
+--   counts (chi^2 = 0) are sterile; concentration (device capture:
+--   20205) is collapse. The target is the BAND around 255. The rate
+--   price of beauty over perfection is chi^2/(2 ln 2) ~ 184 bits per
+--   65536-px frame = 0.003 bits/px — beauty is almost free.
+lawBeautyBand :: Bool
+lawBeautyBand = fairInBand && sterileBelow && priceTiny
+  where
+    -- Genuine LCG-random assignments land in the band; flat and
+    -- collapsed do not.
+    band x = x > 150 && x < 400
+    fairInBand =
+      and [ band (fromRational (indexChiSquare (lcgIndices s 65536)))
+          | s <- [3, 9, 21 :: Int] ]
+    sterileBelow =
+      not (band 0) && not (band (255 * 65536))
+    priceTiny =
+      (255 :: Double) / (2 * log 2) / 65536 < 0.003   -- bits/px
+
 -- ── Harness ────────────────────────────────────────────────────
 
 main :: IO ()
@@ -74,6 +95,7 @@ main = do
     , ("V1c balanced frames score 0 at every rung",        lawBalanceAnchor)
     , ("V1d collapse worst case = 255·n, closed form",     lawCollapseWorstCase)
     , ("V1e χ² is dyadic for our frame sizes (f64-exact)", lawDyadicExact)
+    , ("V1f beauty band: fit the binomial, χ² ≈ 255 ± band", lawBeautyBand)
     ]
 
 checkAll :: [(String, Bool)] -> IO ()

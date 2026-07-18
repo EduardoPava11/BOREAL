@@ -12,9 +12,16 @@ compression. Formally:
           remaining representational freedom — and therefore all
           distortion spending — is CHROMATIC                        [T4]
 
-So the trainer maximizes carried signal per emitted bit: drive chi^2
-toward 0 under the bell's L allocation, spend dE only where chroma buys
-it. The binomial lives in L; chroma is the cost.
+So the trainer maximizes carried signal per emitted bit — CORRECTED
+2026-07-17 (Daniel): the target is NOT chi^2 = 0. Beauty is FIT TO THE
+BINOMIAL (V1f): usage fluctuating like a fair draw, chi^2 in the band
+around 255 — flat uniformity (0) is sterile, concentration (the device
+capture's 20205) is collapse. The rate price of beauty over perfection
+is ~184 bits/frame = 0.003 bits/px: beauty is almost free. The bell
+governs L; chroma is the cost; the WALK surfaces raw-DNG detail as
+dither (DW laws) — de-Bayer done with the GIF frame target in mind:
+the 16x16 pixels are OPTIONS, the dither is how 256 options express
+more signal than 256 colors.
 
 Standing rules (every phase):
   - G-a runs before anything is believed (nn/v1/goldens_test.py).
@@ -48,13 +55,14 @@ Anneal: decay the warm anchor (x0.5 per 2k steps), raise chi^2 + serve
 weights, cool tau (0.1 -> 0.02). The rate term now does the work T3
 licenses it to do. Bell penalty held constant (projection stays exact
 at eval; G-c watches the projection delta).
-EXIT: hard H >= 7.5 bits (chi^2 correspondingly small) AND dE <= classic
-on held-out synth.
+EXIT: hard chi^2 INSIDE THE BEAUTY BAND (150-400, V1f) AND dE <=
+classic on held-out synth. (Not chi^2-minimal: sterile flats fail.)
 
 ## R4 — Dominate the classic (gate G-b for V1)
 Joint fine-tune, no anchor. EXIT: STRICT dominance over the classic seed
-on held-out synthetic: dE < classic AND chi^2 < classic AND homeShare >
-classic, all three simultaneously, 95% of scenes.
+on held-out synthetic: dE < classic AND chi^2 closer to the beauty
+band than classic AND homeShare > classic, all three simultaneously,
+95% of scenes.
 
 ## R5 — Real photons
 Report-bundle loader (rawpy decodes the bundled DNGs; report.json's own
