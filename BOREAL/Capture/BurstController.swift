@@ -47,12 +47,17 @@ final class BurstController {
         let sigma: [Float]                   // 256 cells, row-major
     }
 
-    /// Per-cycle reduction outcome.
+    /// Per-cycle reduction outcome. `plan` is the ETTR solver's suggested EV
+    /// vector for a FUTURE cycle (raw, unclamped — the loop applies the
+    /// P1-P4 mapping); `actualEV` is the cycle's EXIF-derived exposure ratios
+    /// (planned-vs-actual is the Phase 2 exit gate).
     struct Outcome: Sendable {
         let index: Int
         let ok: Bool
         let note: String
         let bands: Bands?
+        let plan: [Float]?
+        let actualEV: [Float]
     }
 
     enum Phase: Equatable {
@@ -100,6 +105,7 @@ final class BurstController {
 
         var dropped = 0
         var biases = savedBiases                 // seed bracket for cycle 0
+        let bounds = camera.biasBounds
 
         for i in 0..<Self.cycleCount {
             if timedOut {
@@ -123,10 +129,7 @@ final class BurstController {
                     return
                 }
             }
-            // ETTR HOOK (next slice): feed cycle stats to scene.zig's planner —
-            // bk_analyze_scene → bk_solve_ettr_exposures → next cycle's biases.
-            // Slice-1 keeps the seed bracket for every cycle.
-            biases = planBiases(after: i, seed: savedBiases)
+            biases = planBiases(seed: savedBiases, bounds: bounds)
         }
 
         phase = .draining
@@ -135,10 +138,17 @@ final class BurstController {
         blog.info("burst: done — \(Self.cycleCount - dropped)/\(Self.cycleCount) cycles, \(self.outcomes.filter(\.ok).count) reduced ok")
     }
 
-    /// Inter-cycle exposure planning. Slice-1: the fixed seed bracket (the
-    /// fusion aligns by recorded EXIF regardless). The scene.zig ETTR solver
-    /// replaces this body without touching the loop.
-    private func planBiases(after _: Int, seed: [Float]) -> [Float] { seed }
+    /// The Phase 2 mapping under the P1-P4 laws (spec/exposure/EvPlan.hs):
+    /// the latest completed cycle's ETTR plan, clamped to device bias bounds;
+    /// no plan yet (first cycles, failed reductions) → the seed bracket.
+    /// The reduction chain lags capture by up to `maxInFlight` cycles, so
+    /// this is a control loop with 1-2 cycles of latency — by design.
+    private func planBiases(seed: [Float], bounds: ClosedRange<Float>) -> [Float] {
+        guard let plan = outcomes.last(where: { $0.ok && $0.plan != nil })?.plan else {
+            return seed                          // P2 fallback
+        }
+        return plan.map { min(bounds.upperBound, max(bounds.lowerBound, $0)) }  // P1
+    }
 
     // ── Reduction chain (serial, off-main) ──────────────────────────────────
 
@@ -163,7 +173,8 @@ final class BurstController {
     /// box S²→256² → OKLab Q16 → pyramid ×3 → σ head.
     nonisolated static func reduce(_ cycle: Cycle) -> Outcome {
         func fail(_ note: String) -> Outcome {
-            Outcome(index: cycle.index, ok: false, note: note, bands: nil)
+            Outcome(index: cycle.index, ok: false, note: note, bands: nil,
+                    plan: nil, actualEV: [1, 1, 1, 1])
         }
 
         // 1. Decode (device-proven dng.zig path; EXIF rides along for fuse).
@@ -187,6 +198,16 @@ final class BurstController {
             return fail("sensor \(ref.width)×\(ref.height) below the 256² ceiling")
         }
         let cropped = frames.map { cropCenter($0, side: side) }
+
+        // Phase 2 analysis: clips from the base frame's mosaic (the bias
+        // closest to 0) → the ETTR solver's plan for a future cycle; actual
+        // EV ratios from EXIF for the planned-vs-actual record.
+        let baseIdx = cycle.biases.isEmpty
+            ? 0
+            : cycle.biases.enumerated().min(by: { abs($0.element) < abs($1.element) })!.offset
+        let clips = Kernel.analyzeMosaicClips(cropped[baseIdx])
+        let plan = Kernel.solveETTR(clips: clips, wb: ref.wb)
+        let actualEV = Kernel.relativeExposures(cropped)
 
         // 3-5. Fuse (EV-aware) → demosaic (MHC) → camera→ProPhoto.
         guard let fused = Kernel.fuse(cropped) else { return fail("fuse failed") }
@@ -220,7 +241,8 @@ final class BurstController {
         let bands = Bands(side: ceiling, L: bL, a: bA, b: bB,
                           sigma: sigmaGrid(side: ceiling, channels: [bL, bA, bB]))
         return Outcome(index: cycle.index, ok: true,
-                       note: "S=\(side) → \(ceiling)² bands", bands: bands)
+                       note: "S=\(side) → \(ceiling)² bands", bands: bands,
+                       plan: plan, actualEV: actualEV)
     }
 
     /// Largest 256·2^j ≤ min(width, height), capped at the spec canonical

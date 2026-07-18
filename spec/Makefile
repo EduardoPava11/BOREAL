@@ -11,7 +11,7 @@ FLAGS  = -W -package-env=-
 GEOMETRY  = geometry/CropShape.hs
 BUFFER    = buffer/EmbeddedPyramid.hs
 PALETTE   = palette/PaletteGrid.hs
-EXPOSURE  = exposure/EvNormalize.hs
+EXPOSURE  = exposure/EvNormalize.hs exposure/EvPlan.hs
 COLORPATH = colorpath/ColorQuant.hs
 GIFTARGET = giftarget/GifIndex.hs
 

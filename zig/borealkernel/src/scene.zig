@@ -268,6 +268,73 @@ pub fn analyzeFrame(rgb: [*]const f32, width: u32, height: u32) SceneClips {
     return solveClips(&hr, &hg, &hb);
 }
 
+/// Analyze a RAW Bayer mosaic directly → ETTR clips (GIF-ISP Phase 2: the
+/// inter-cycle planner runs on the cycle's own mosaic, no demosaic needed).
+/// Same CFA walk as `channelHistograms` — green at the off-diagonal sites,
+/// red/blue at the corners (swapped for BGGR) — normalized by the sensor's
+/// black/white (NO white balance, so tails read TRUE per-channel exposure),
+/// fed into the owned `Histogram` and resolved by `solveClips`.
+pub fn analyzeMosaic(
+    samples: [*]const u16,
+    width: u32,
+    height: u32,
+    cfa: u32, // 0 = RGGB, 1 = BGGR
+    black: f32,
+    white: f32,
+) SceneClips {
+    var hr = Histogram{};
+    var hg = Histogram{};
+    var hb = Histogram{};
+    const range = @max(white - black, 1.0);
+    const inv = 1.0 / range;
+    const w: usize = @intCast(width);
+    const h: usize = @intCast(height);
+    const is_rggb = cfa == 0;
+
+    var y: usize = 0;
+    while (y < h) : (y += 1) {
+        const py = y & 1;
+        const row = y * w;
+        var x: usize = 0;
+        while (x < w) : (x += 1) {
+            const s: f32 = @floatFromInt(samples[row + x]);
+            const v = std.math.clamp((s - black) * inv, 0.0, 1.0);
+            const px = x & 1;
+            if (py == 0 and px == 0) {
+                if (is_rggb) hr.add(v) else hb.add(v);
+            } else if (py == 1 and px == 1) {
+                if (is_rggb) hb.add(v) else hr.add(v);
+            } else {
+                hg.add(v);
+            }
+        }
+    }
+    return solveClips(&hr, &hg, &hb);
+}
+
+test "analyzeMosaic: flat mid-gray mosaic → all channels present, room > 0" {
+    var m: [64 * 64]u16 = undefined;
+    @memset(&m, 8000); // mid-range for black=512, white=16383
+    const clips = analyzeMosaic(&m, 64, 64, 0, 512, 16383);
+    try std.testing.expect(clips.present_r and clips.present_g and clips.present_b);
+    try std.testing.expect(clips.room_g > 0); // dark of ETTR target → push up
+    try std.testing.expectApproxEqAbs(clips.room_r, clips.room_g, 1e-4);
+}
+
+test "analyzeMosaic: clipped green pulls its room negative" {
+    var m: [64 * 64]u16 = undefined;
+    // RGGB: saturate the two green sites, keep R/B mid.
+    for (0..64) |y| {
+        for (0..64) |x| {
+            const green = ((y & 1) + (x & 1)) == 1;
+            m[y * 64 + x] = if (green) 16383 else 8000;
+        }
+    }
+    const clips = analyzeMosaic(&m, 64, 64, 0, 512, 16383);
+    try std.testing.expect(clips.room_g < 0); // at clip → pull down
+    try std.testing.expect(clips.room_r > 0);
+}
+
 // ── Per-channel display histograms (the exposure read-out) ─────────────────
 
 /// Build three per-channel histograms straight from a RAW Bayer mosaic, for the

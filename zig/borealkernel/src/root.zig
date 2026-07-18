@@ -265,6 +265,21 @@ export fn bk_solve_ettr_exposures(clips: *const SceneClips, wb_mult: [*]const f3
     out.* = scene.planExposures(clips.*, .{ wb_mult[0], wb_mult[1], wb_mult[2] }, extra_shadow);
 }
 
+/// Stage A, mosaic-direct (GIF-ISP Phase 2): analyze a RAW Bayer mosaic →
+/// per-channel ETTR clips, no demosaic needed. Feeds bk_solve_ettr_exposures
+/// for the inter-cycle EV re-plan.
+export fn bk_analyze_mosaic_clips(
+    samples: [*]const u16,
+    width: u32,
+    height: u32,
+    cfa: u32,
+    black: f32,
+    white: f32,
+    out: *SceneClips,
+) void {
+    out.* = scene.analyzeMosaic(samples, width, height, cfa, black, white);
+}
+
 /// Per-frame exposure read-out. Bin a RAW Bayer mosaic into three per-channel
 /// display histograms (green at the off-diagonal CFA sites, red/blue at the
 /// corners; swapped for BGGR), normalized by the sensor's black/white levels —

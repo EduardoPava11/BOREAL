@@ -168,6 +168,45 @@ enum Kernel {
         return out
     }
 
+    // ── EV planning (GIF-ISP Phase 2: the inter-cycle ETTR loop) ───────────
+
+    /// Analyze a frame's RAW mosaic directly → per-channel ETTR clips
+    /// (no demosaic; black/white-normalized, no WB → true exposure).
+    static func analyzeMosaicClips(_ f: Frame) -> bk_scene_clips_t {
+        var out = bk_scene_clips_t()
+        f.samples.withUnsafeBufferPointer { p in
+            bk_analyze_mosaic_clips(p.baseAddress, UInt32(f.width), UInt32(f.height),
+                                    f.cfa, f.black, f.white, &out)
+        }
+        return out
+    }
+
+    /// Clips + WB prior → the 4-frame EV plan [green, red, blue, shadow]
+    /// (stops from the base exposure). All solver logic lives in scene.zig.
+    static func solveETTR(clips: bk_scene_clips_t,
+                          wb: (r: Float, g: Float, b: Float),
+                          extraShadow: Float = 0) -> [Float] {
+        var c = clips
+        var plan = bk_exposure_plan_t()
+        let wbArr: [Float] = [wb.r, wb.g, wb.b]
+        wbArr.withUnsafeBufferPointer { w in
+            bk_solve_ettr_exposures(&c, w.baseAddress, extraShadow, &plan)
+        }
+        return [plan.ev_green, plan.ev_red, plan.ev_blue, plan.ev_shadow]
+    }
+
+    /// Per-frame relative exposure ratios from EXIF (darkest = 1; the same
+    /// single-source math the fuse uses — see EV1-EV5 laws).
+    static func relativeExposures(_ frames: [Frame]) -> [Float] {
+        guard frames.count == 4 else { return [1, 1, 1, 1] }
+        var et = frames.map(\.exposureTime)
+        var iso = frames.map(\.iso)
+        var fn = frames.map(\.fNumber)
+        var ev = [Float](repeating: 1, count: 4)
+        bk_relative_exposures(&et, &iso, &fn, &ev)
+        return ev
+    }
+
     // ── 16-LAB latent chain (BOREAL-16LAB-DESIGN.md L2 steps 6-8) ──────────
 
     /// Linear-light box downsample: interleaved RGB f32 → RGB f32 at

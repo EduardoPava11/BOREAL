@@ -59,6 +59,10 @@ final class CameraController: NSObject {
     /// The EV offsets of the 4 bracketed frames (dark → shadow-lift). Tunable; the
     /// fusion aligns by recorded EXIF regardless of these nominal values.
     var biases: [Float] = [-2, 0, 2, 4]
+    /// Device exposure-bias limits, captured at configure(). The ETTR planner's
+    /// output is clamped into this range (EvPlan law P1) before it reaches the
+    /// hardware; the default is a safe conservative envelope pre-configure.
+    private(set) var biasBounds: ClosedRange<Float> = -4...4
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -102,6 +106,7 @@ final class CameraController: NSObject {
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else { throw CamError.configFailed }
         session.addInput(input)
+        biasBounds = device.minExposureTargetBias...device.maxExposureTargetBias
 
         guard session.canAddOutput(output) else { throw CamError.configFailed }
         session.addOutput(output)

@@ -67,6 +67,11 @@ enum CycleReport {
 
             var json: [String: Any] = [
                 "design": "BOREAL-16LAB-DESIGN.md",
+                "ev": [
+                    "plannedBiases": biases.map { Double($0) },
+                    "actualRatios": outcome.actualEV.map { Double($0) },
+                    "nextPlan": (outcome.plan ?? []).map { Double($0) },
+                ],
                 "note": "bands are prefix-layout Q16 OKLab; bands[0..r*r] decodes rung r exactly; palette = band0 (seed 16x16); indices via i64 argmin ties-lowest",
                 "biases": biases.map { Double($0) },
                 "ceiling": bands.side,

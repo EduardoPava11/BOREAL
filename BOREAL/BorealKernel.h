@@ -140,6 +140,12 @@ void bk_analyze_scene(const float *rgb, uint32_t width, uint32_t height, bk_scen
  * prior (Δ = log2(wb_c/wb_g)). extra_shadow adds stops to the shadow frame. */
 void bk_solve_ettr_exposures(const bk_scene_clips_t *clips, const float *wb_mult, float extra_shadow, bk_exposure_plan_t *out);
 
+/* Stage A, mosaic-direct (GIF-ISP Phase 2): ETTR clips straight from a RAW
+ * Bayer mosaic (no demosaic) — feeds the inter-cycle EV re-plan. */
+void bk_analyze_mosaic_clips(const uint16_t *samples, uint32_t width,
+                             uint32_t height, uint32_t cfa, float black,
+                             float white, bk_scene_clips_t *out);
+
 /* Per-frame exposure read-out. Bin a RAW Bayer mosaic (u16 samples, length
  * width*height) into three per-channel display histograms: green at the two
  * off-diagonal CFA sites, red/blue at the corners (swapped for BGGR). Values
