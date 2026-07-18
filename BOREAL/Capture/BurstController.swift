@@ -72,6 +72,10 @@ final class BurstController {
 
     private(set) var phase: Phase = .idle
     private(set) var outcomes: [Outcome] = []
+    /// The burst's product: an animated GIF89a (one frame per completed
+    /// cycle, GCT = the first cycle's seed palette — D1 default). Published
+    /// after .done when assembly succeeds.
+    private(set) var gifURL: URL?
 
     /// Reduction tasks by cycle index — the serial chain tail is the last value;
     /// awaiting tasks[i - maxInFlight] before capturing cycle i bounds memory.
@@ -94,6 +98,7 @@ final class BurstController {
         reductionTasks.removeAll()
         chainTail = nil
         timedOut = false
+        gifURL = nil
 
         let savedBiases = camera.biases
         defer { camera.biases = savedBiases }
@@ -138,6 +143,54 @@ final class BurstController {
         await chainTail?.value
         phase = .done(completed: Self.cycleCount - dropped, dropped: dropped)
         blog.info("burst: done — \(Self.cycleCount - dropped)/\(Self.cycleCount) cycles, \(self.outcomes.filter(\.ok).count) reduced ok")
+
+        // Assemble the product: one GIF frame per completed cycle, indexed
+        // against the FIRST cycle's seed palette (D1: one global table).
+        let snapshot = outcomes
+        gifURL = await Task.detached(priority: .userInitiated) {
+            Self.assembleGIF(from: snapshot)
+        }.value
+    }
+
+    /// Burst → GIF89a: decode each cycle's ceiling rung, index against the
+    /// governing palette, encode. 20 cs per cycle frame (16 cycles ≈ the
+    /// burst's own ~3.2 s duration); the 64-frame/5 cs contract arrives
+    /// with the per-frame rendering slice.
+    nonisolated private static func assembleGIF(from outcomes: [Outcome]) -> URL? {
+        let ok = outcomes.filter { $0.ok && $0.bands != nil }.sorted { $0.index < $1.index }
+        guard let first = ok.first?.bands else { return nil }
+        let palL = Array(first.L[0..<256])
+        let palA = Array(first.a[0..<256])
+        let palB = Array(first.b[0..<256])
+        let palRGB = Kernel.oklabQ16ToSRGB8(L: palL, a: palA, b: palB)
+
+        var frames: [[UInt8]] = []
+        var side = 0
+        for outcome in ok {
+            guard let bands = outcome.bands else { continue }
+            let r = bands.side
+            guard let iL = Kernel.msDecode(bands.L, mosaicSide: bands.mosaicSide, rung: r),
+                  let iA = Kernel.msDecode(bands.a, mosaicSide: bands.mosaicSide, rung: r),
+                  let iB = Kernel.msDecode(bands.b, mosaicSide: bands.mosaicSide, rung: r)
+            else { continue }
+            side = max(side, r)
+            frames.append(Kernel.indexMap(L: iL, a: iA, b: iB,
+                                          palL: palL, palA: palA, palB: palB))
+        }
+        guard !frames.isEmpty, side > 0,
+              frames.allSatisfy({ $0.count == side * side }),
+              let gif = Kernel.gifEncode(frames: frames, side: side,
+                                         paletteRGB: palRGB, delayCs: 20)
+        else { return nil }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BOREAL-burst-\(Int(Date().timeIntervalSince1970)).gif")
+        do {
+            try gif.write(to: url)
+            return url
+        } catch {
+            return nil
+        }
     }
 
     /// The Phase 2 mapping under the P1-P4 laws (spec/exposure/EvPlan.hs):

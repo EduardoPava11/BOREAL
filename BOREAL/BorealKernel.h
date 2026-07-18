@@ -445,6 +445,20 @@ int bk_ms_encode(const float *mosaic, uint32_t side, uint32_t cfa,
 int bk_ms_decode(const int32_t *bands, uint32_t side, uint32_t rung,
                  int32_t *out);
 
+/* ── GIF89a wire (Boreal.GifWire, laws W1-W5) ───────────────────────────
+ *
+ * Deterministic animated GIF: fixed-9-bit LZW (CLEAR every 254 index
+ * codes so the code width never grows — byte-exact everywhere, readable
+ * by any decoder), one global 768-byte color table, NETSCAPE infinite
+ * loop, per-frame delay in centiseconds. frames = n_frames x side^2
+ * palette indices, flat. bk_gif_encoded_len gives the EXACT output size
+ * (the format's length is a closed form). Returns bytes written or 0.
+ * Gated byte-exact by fixtures/gifwire_golden.json. */
+size_t bk_gif_encoded_len(uint32_t side, uint32_t n_frames);
+size_t bk_gif_encode(const uint8_t *frames, uint32_t n_frames, uint32_t side,
+                     const uint8_t *gct, uint32_t delay_cs,
+                     uint8_t *out, size_t out_len);
+
 #ifdef __cplusplus
 }
 #endif

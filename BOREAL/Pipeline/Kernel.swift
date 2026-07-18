@@ -257,6 +257,46 @@ enum Kernel {
         return status == 0 ? out : nil
     }
 
+    // ── GIF89a wire (Phase 4, laws W1-W5) ──────────────────────────────────
+
+    /// Encode an animated GIF: frames of side² palette indices, one global
+    /// 768-byte color table (RGB), per-frame delay in centiseconds, infinite
+    /// loop. Deterministic fixed-9-bit LZW; nil on bad input.
+    static func gifEncode(frames: [[UInt8]], side: Int, paletteRGB: [UInt8],
+                          delayCs: Int) -> Data? {
+        guard !frames.isEmpty, paletteRGB.count >= 768,
+              frames.allSatisfy({ $0.count == side * side }) else { return nil }
+        let flat = frames.flatMap { $0 }
+        let cap = bk_gif_encoded_len(UInt32(side), UInt32(frames.count))
+        var out = [UInt8](repeating: 0, count: cap)
+        let written = flat.withUnsafeBufferPointer { f in
+            paletteRGB.withUnsafeBufferPointer { p in
+                out.withUnsafeMutableBufferPointer { o in
+                    bk_gif_encode(f.baseAddress, UInt32(frames.count), UInt32(side),
+                                  p.baseAddress, UInt32(delayCs),
+                                  o.baseAddress, cap)
+                }
+            }
+        }
+        guard written == cap else { return nil }
+        return Data(out)
+    }
+
+    /// Nearest-neighbor index upscale r² → target² (replication; the honest
+    /// upscale for palette-indexed frames).
+    static func upscaleIndices(_ indices: [UInt8], from r: Int, to target: Int) -> [UInt8] {
+        guard target % r == 0 else { return indices }
+        let k = target / r
+        var out = [UInt8](repeating: 0, count: target * target)
+        for y in 0..<target {
+            let sy = y / k
+            for x in 0..<target {
+                out[y * target + x] = indices[sy * r + x / k]
+            }
+        }
+        return out
+    }
+
     // ── 16-LAB latent chain (BOREAL-16LAB-DESIGN.md L2 steps 6-8) ──────────
 
     /// Linear-light box downsample: interleaved RGB f32 → RGB f32 at

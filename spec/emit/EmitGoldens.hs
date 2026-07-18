@@ -30,6 +30,7 @@ import Boreal.ColorPath
 import Boreal.Exposure
 import Boreal.Geometry
 import Boreal.GifTarget
+import Boreal.GifWire
 import Boreal.MultiScale
 import Boreal.Palette
 import Boreal.Pyramid
@@ -324,6 +325,35 @@ multiscaleJson = jObj
     msStack = rungStack msIdent msSide msMosaic
     msBands pick = encodeMS [ (r, pick planes) | (r, planes) <- msStack ]
 
+-- ── GIF wire fixture (Phase 4: the ISP's native output) ────────
+
+gifwireJson :: String
+gifwireJson = jObj
+  [ ("conventions", jObj
+      [ ("lzw",    jStr "minCodeSize 8; fixed 9-bit codes packed LSB-first; stream = CLEAR(256) ++ index groups of <=254 with CLEAR between ++ EOI(257); code width never grows; sub-blocks <=255 bytes + 0x00 terminator")
+      , ("file",   jStr "GIF89a; LSD packed 0xF7 (GCT, 256); GCT 768 bytes; NETSCAPE2.0 loop 0 (infinite); per frame GCE(delay, no transparency) + descriptor(full canvas, no LCT) + LZW; trailer 0x3B")
+      , ("length", jStr "codes = 1 + n + (ceil(n/254)-1) + 1; dataB = ceil(9*codes/8); frameB = 1 + dataB + ceil(dataB/255) + 1")
+      ])
+  , ("fixture", jObj
+      [ ("side",    show gwSide)
+      , ("delayCs", show gwDelay)
+      , ("palette", jInts (map fromIntegral gwGct))
+      , ("frames",  jArr [ jInts (map fromIntegral f) | f <- gwFrames ])
+      , ("gifBytes", jInts (map fromIntegral (encodeGif gwSide gwDelay gwGct gwFrames))) ])
+  ]
+  where
+    gwSide  = 16
+    gwDelay = 20
+    gwGct = concat
+      [ [r, g, b]
+      | i <- [0 .. 255]
+      , let (r, g, b) = srgb8FromOklabQ16 (quantizeLab (bellPalette i)) ]
+    gwFrames =
+      [ map fromIntegral [0 .. 255 :: Int]
+      , [ fromIntegral ((s `div` 65536) `mod` 256)
+        | s <- take 256 (iterate gwLcg 41) ] ]
+    gwLcg s = s * 6364136223846793005 + 1442695040888963407 :: Integer
+
 -- ── Geometry fixture ───────────────────────────────────────────
 
 geometryJson :: String
@@ -353,6 +383,7 @@ main = do
   emit "colorpath_golden.json" colorpathJson
   emit "giftarget_golden.json" giftargetJson
   emit "multiscale_golden.json" multiscaleJson
+  emit "gifwire_golden.json" gifwireJson
   writeFile "../zig/borealkernel/src/srgb_table.zig" srgbTableZig
   putStrLn "  wrote ../zig/borealkernel/src/srgb_table.zig (generated)"
   putStrLn "GOLDENS EMITTED"

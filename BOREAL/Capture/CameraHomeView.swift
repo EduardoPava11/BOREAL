@@ -108,6 +108,15 @@ struct CameraHomeView: View {
                     .background(.ultraThinMaterial, in: Capsule())
                     .padding(.bottom, 10)
             }
+            if let gif = burst.gifURL {
+                ShareLink(items: [gif]) {
+                    Label("Share burst GIF", systemImage: "square.and.arrow.up")
+                        .font(.mono(11))
+                        .padding(.vertical, 6).padding(.horizontal, 12)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+                .padding(.bottom, 10)
+            }
 
             // Shutter row: single 4-frame bracket (primary) + 64-burst (16×4).
             ZStack {

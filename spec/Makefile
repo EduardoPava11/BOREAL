@@ -15,8 +15,9 @@ EXPOSURE  = exposure/EvNormalize.hs exposure/EvPlan.hs
 COLORPATH = colorpath/ColorQuant.hs
 GIFTARGET = giftarget/GifIndex.hs
 MULTISCALE = multiscale/MultiScaleLaws.hs
+GIFWIRE   = gifwire/GifWireLaws.hs
 
-CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE)
+CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE)
 
 # ── Targets ──────────────────────────────────────────────
 

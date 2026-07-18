@@ -322,6 +322,49 @@ def main():
             prev, r_prev = img, r
         assert bands == ms[key], f'multiscale {key} drift'
 
+    # ── gifwire: re-encode the GIF from the written conventions ──────────
+    gw = json.load(open('gifwire_golden.json'))['fixture']
+    gside, gdelay = gw['side'], gw['delayCs']
+    gpal, gframes = gw['palette'], gw['frames']
+
+    def u16(v):
+        return [v & 0xFF, (v >> 8) & 0xFF]
+
+    def pack9(codes):
+        out, acc, nbits = [], 0, 0
+        for c in codes:
+            acc |= c << nbits
+            nbits += 9
+            while nbits >= 8:
+                out.append(acc & 0xFF)
+                acc >>= 8
+                nbits -= 8
+        if nbits:
+            out.append(acc & 0xFF)
+        return out
+
+    def frame_bytes(indices):
+        groups = [indices[i:i + 254] for i in range(0, len(indices), 254)] or [[]]
+        codes = [256]
+        for g in groups[:-1]:
+            codes += g + [256]
+        codes += groups[-1] + [257]
+        data = pack9(codes)
+        blocks = []
+        for i in range(0, len(data), 255):
+            b = data[i:i + 255]
+            blocks += [len(b)] + b
+        return [8] + blocks + [0]
+
+    regif = list(b'GIF89a') + u16(gside) + u16(gside) + [0xF7, 0, 0] + gpal
+    regif += [0x21, 0xFF, 0x0B] + list(b'NETSCAPE2.0') + [3, 1] + u16(0) + [0]
+    for f in gframes:
+        regif += [0x21, 0xF9, 0x04, 0x00] + u16(gdelay) + [0, 0]
+        regif += [0x2C] + u16(0) + u16(0) + u16(gside) + u16(gside) + [0]
+        regif += frame_bytes(f)
+    regif += [0x3B]
+    assert regif == gw['gifBytes'], 'gifwire bytes drift'
+
     print('ORACLE GREEN: all fixtures match independent re-computation')
 
 

@@ -107,6 +107,20 @@ enum CycleReport {
                 }
             }
 
+            // The rung LADDER as an actual GIF89a — the ISP's native format
+            // animating coarse → fine (each rung nearest-upscaled to the
+            // ceiling so all frames share the canvas).
+            let ceiling = indexMaps.keys.max() ?? 16
+            let ladderFrames = indexMaps.sorted(by: { $0.key < $1.key }).map {
+                Kernel.upscaleIndices($0.value, from: $0.key, to: ceiling)
+            }
+            if let gif = Kernel.gifEncode(frames: ladderFrames, side: ceiling,
+                                          paletteRGB: palRGB, delayCs: 50) {
+                let u = dir.appendingPathComponent("ladder.gif")
+                try gif.write(to: u)
+                urls.append(u)
+            }
+
             for (i, dng) in dngs.enumerated() {
                 let u = dir.appendingPathComponent("frame_\(i + 1).dng")
                 try dng.write(to: u)

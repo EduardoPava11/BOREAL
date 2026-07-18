@@ -27,6 +27,7 @@ pub const oklab    = @import("oklab.zig");
 pub const reduce   = @import("reduce.zig");
 pub const giftarget = @import("giftarget.zig");
 pub const multiscale = @import("multiscale.zig");
+pub const gifwire  = @import("gifwire.zig");
 pub const srgb_table = @import("srgb_table.zig");
 
 /// Status codes — matches `bk_status_t` enum in BorealKernel.h.
@@ -670,6 +671,30 @@ export fn bk_ms_decode(
     const ok = multiscale.decodeRung(bands[0..total], side, rung,
         out[0 .. @as(usize, rung) * rung]);
     return if (ok) @intFromEnum(Status.ok) else @intFromEnum(Status.bad_dimensions);
+}
+
+/// Exact byte size of an encoded GIF (side² frames, fixed-9-bit scheme).
+export fn bk_gif_encoded_len(side: u32, n_frames: u32) usize {
+    return gifwire.encodedLen(side, n_frames);
+}
+
+/// Encode an animated GIF89a: flat frames (n_frames × side² palette
+/// indices), a 768-byte GCT, per-frame delay in centiseconds, infinite
+/// loop. Deterministic fixed-9-bit LZW (never grows, any decoder reads
+/// it). Returns bytes written, or 0 on a too-small buffer. Gated
+/// byte-exact by fixtures/gifwire_golden.json.
+export fn bk_gif_encode(
+    frames: [*]const u8,
+    n_frames: u32,
+    side: u32,
+    gct: [*]const u8,
+    delay_cs: u32,
+    out: [*]u8,
+    out_len: usize,
+) usize {
+    const n = @as(usize, side) * side;
+    return gifwire.encode(frames[0 .. @as(usize, n_frames) * n], n_frames, side,
+        gct[0..768], delay_cs, out[0..out_len]);
 }
 
 test "root: status enum stays in sync with bridging header values" {
