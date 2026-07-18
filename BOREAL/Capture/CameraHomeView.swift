@@ -16,8 +16,12 @@ struct CameraHomeView: View {
     let onImport: () -> Void
 
     @State private var camera = CameraController()
+    @State private var burst = BurstController()
     @State private var camError: String?
     @State private var busy = false
+    @State private var labBusy = false
+    @State private var labNote: String?
+    @State private var reportURLs: [URL]?
 
     var body: some View {
         ZStack {
@@ -98,16 +102,63 @@ struct CameraHomeView: View {
                 .allowsHitTesting(false)
             }
 
-            // Shutter.
-            Button(action: shoot) {
-                ZStack {
-                    Circle().strokeBorder(Theme.text, lineWidth: 4).frame(width: 76, height: 76)
-                    Circle().fill(Theme.text).frame(width: 62, height: 62)
-                        .opacity(busy ? 0.4 : 1)
-                    if busy { ProgressView().tint(.black) }
+            // Burst / report status read-out.
+            if let status = burstStatus ?? labNote {
+                Text(status)
+                    .font(.mono(11))
+                    .foregroundStyle(Theme.textDim)
+                    .padding(.vertical, 4).padding(.horizontal, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.bottom, 10)
+            }
+            if let urls = reportURLs {
+                ShareLink(items: urls) {
+                    Label("AirDrop 16-LAB report (\(urls.count) files)", systemImage: "square.and.arrow.up")
+                        .font(.mono(11))
+                        .padding(.vertical, 6).padding(.horizontal, 12)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+                .padding(.bottom, 10)
+            }
+
+            // Shutter row: single 4-frame bracket (primary) + 64-burst (16×4).
+            ZStack {
+                Button(action: shoot) {
+                    ZStack {
+                        Circle().strokeBorder(Theme.text, lineWidth: 4).frame(width: 76, height: 76)
+                        Circle().fill(Theme.text).frame(width: 62, height: 62)
+                            .opacity(busy ? 0.4 : 1)
+                        if busy { ProgressView().tint(.black) }
+                    }
+                }
+                .disabled(busy || burst.isRunning)
+
+                HStack {
+                    Button(action: shootReport) {
+                        Text("LAB")
+                            .font(.mono(13))
+                            .foregroundStyle(labBusy ? .black : Theme.text)
+                            .frame(width: 48, height: 48)
+                            .background(Circle().fill(labBusy ? Theme.text : .clear))
+                            .overlay(Circle().strokeBorder(Theme.text, lineWidth: 2))
+                    }
+                    .disabled(busy || labBusy || burst.isRunning)
+                    .padding(.leading, 34)
+                    Spacer()
+                    Button(action: shootBurst) {
+                        Text("64")
+                            .font(.mono(15))
+                            .foregroundStyle(burst.isRunning ? .black : Theme.text)
+                            .frame(width: 48, height: 48)
+                            .background(
+                                Circle().fill(burst.isRunning ? Theme.text : .clear)
+                            )
+                            .overlay(Circle().strokeBorder(Theme.text, lineWidth: 2))
+                    }
+                    .disabled(busy || labBusy || burst.isRunning)
+                    .padding(.trailing, 34)
                 }
             }
-            .disabled(busy)
             .padding(.bottom, 40)
         }
     }
@@ -135,6 +186,56 @@ struct CameraHomeView: View {
             .padding(.bottom, 24)
         }
         .padding(24)
+    }
+
+    /// One line of burst state for the capsule read-out; nil hides it.
+    private var burstStatus: String? {
+        switch burst.phase {
+        case .idle:
+            return nil
+        case .capturing(let cycle):
+            return "cycle \(cycle)/\(BurstController.cycleCount)"
+        case .draining:
+            return "reducing \(burst.outcomes.count)/\(BurstController.cycleCount)…"
+        case .done(let completed, let dropped):
+            return dropped == 0 ? "burst ✓ \(completed) cycles"
+                                : "burst ✓ \(completed) cycles (\(dropped) dropped)"
+        case .failed(let why):
+            return "burst ✗ \(why)"
+        }
+    }
+
+    private func shootBurst() {
+        Task { await burst.run(camera: camera) }
+    }
+
+    /// Capture ONE 4-DNG cycle, run the L2 chain on-device, and package the
+    /// 16-LAB report (bands, palette, index maps, rung PNGs, source DNGs)
+    /// for AirDrop — the ground-truth artifact for Mac-side analysis.
+    private func shootReport() {
+        labBusy = true
+        labNote = "capturing cycle…"
+        reportURLs = nil
+        Task {
+            do {
+                let dngs = try await camera.captureBracket()
+                let biases = camera.biases
+                labNote = "reducing → 16-LAB report…"
+                let result = await Task.detached(priority: .userInitiated) {
+                    CycleReport.build(dngs: dngs, biases: biases)
+                }.value
+                switch result {
+                case .success(let urls):
+                    reportURLs = urls
+                    labNote = "report ready — \(urls.count) files"
+                case .failure(let why):
+                    labNote = "report ✗ \(why)"
+                }
+            } catch {
+                labNote = "report ✗ \(error)"
+            }
+            labBusy = false
+        }
     }
 
     private func shoot() {

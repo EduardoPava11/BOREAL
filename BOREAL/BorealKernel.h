@@ -373,6 +373,55 @@ int bk_slow_fold_session(
 #define BK_SHAPE_RIGHT_SKEW  2u
 #define BK_SHAPE_BIMODAL     3u
 
+/* ── Embedded S-transform pyramid (spec/Boreal/Pyramid.hs contract) ──────
+ *
+ * Image (side² int32, row-major) ⇄ coefficient bands (side² int32, PREFIX
+ * layout): top band base² row-major at [0, base²); detail level with
+ * quad-grid side s at [s², 4·s²) as interleaved (LH, HL, HH) per quad,
+ * levels coarse→fine. Prefixes telescope: every prefix is a rung
+ * (16², 32², 64², 128², 256²). The 16×16 latent frame IS bands[0..256);
+ * back-trace = exact inverse transform, reading deeper into the buffer.
+ *
+ * side and base must be powers of two with base <= side. Caller owns all
+ * buffers; scratch must hold (side*side)/2 elements. Returns BK_OK or
+ * BK_BAD_DIMENSIONS (as int, per the house prototype convention).
+ * Gated bit-exact by fixtures/pyramid_golden.json. */
+int bk_pyramid_analyze(const int32_t *img, uint32_t side, uint32_t base,
+                       int32_t *out_bands, int32_t *scratch);
+int bk_pyramid_synthesize(const int32_t *bands, uint32_t side, uint32_t base,
+                          int32_t *out_img, int32_t *scratch);
+
+/* ── DNG → LAB: linear ProPhoto → OKLab → Q16 (Boreal.ColorPath) ────────
+ *
+ * rgb = interleaved linear-ProPhoto f32 (output of bk_apply_color_matrix),
+ * out = interleaved OKLab in Q16 int32 (L,a,b per pixel) — the pyramid's
+ * exact integer domain. Deterministic by construction: owned cbrt (never
+ * libm), pinned matrix op order, f64 math throughout. Caller owns both
+ * buffers (3*n_px each). Gated bit-exact by fixtures/colorpath_golden.json. */
+void bk_oklab_q16_from_prophoto(const float *rgb, size_t n_px, int32_t *out);
+
+/* Linear-light box downsample (L2 step 6): interleaved RGB f32 in, RGB f32
+ * out at (width/k)x(height/k). k must divide both dimensions. Runs BEFORE
+ * OKLab because averaging light is only correct in linear space. Caller owns
+ * both buffers. Gated bit-exact by fixtures/colorpath_golden.json. */
+void bk_box_reduce_rgb(const float *rgb, uint32_t width, uint32_t height,
+                       uint32_t k, float *out);
+
+/* ── GIF target: index map + display palette (Boreal.GifTarget) ─────────
+ *
+ * The ISP targets GIF structure: a 256-color palette seeded by the 16x16
+ * latent (grid position == palette color) and a u8 index map per rung.
+ * bk_index_map: planar Q16 OKLab pixels vs the planar 256-entry palette,
+ * integer i64 argmin, ties -> LOWEST index. bk_oklab_q16_to_srgb8: planar
+ * Q16 OKLab -> interleaved sRGB bytes (3*n_px) via Ottosson's inverse and
+ * the generated normative encode table (never pow at runtime). Both gated
+ * bit-exact by fixtures/giftarget_golden.json. */
+void bk_index_map(const int32_t *px_l, const int32_t *px_a, const int32_t *px_b,
+                  size_t n_px, const int32_t *pal_l, const int32_t *pal_a,
+                  const int32_t *pal_b, uint8_t *out);
+void bk_oklab_q16_to_srgb8(const int32_t *px_l, const int32_t *px_a,
+                           const int32_t *px_b, size_t n_px, uint8_t *out);
+
 #ifdef __cplusplus
 }
 #endif

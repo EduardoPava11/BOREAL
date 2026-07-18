@@ -1,0 +1,1 @@
+{"sensor":[4224,3024],"canonicalSide":2048,"gridSide":16,"cellSide":128,"quadsPerCellSide":64,"rungs":[16,32,64,128,256],"ceilingRung":256,"burstFrames":64,"cycleFrames":4,"cycles":16,"latentChannels":4}

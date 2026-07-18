@@ -46,10 +46,68 @@ pub fn build(b: *std.Build) void {
     });
     const run_lslcd_tests = b.addRunArtifact(lslcd_tests);
 
+    // Cross-language pyramid goldens (emitted by `make -C spec gate`).
+    // Skip-if-absent by default; -Drequire_fixtures=true makes absence FAIL.
+    const require_fixtures = b.option(
+        bool,
+        "require_fixtures",
+        "Fail (not skip) fixture tests if goldens are absent (default: false)",
+    ) orelse false;
+    const fixture_dir = b.option(
+        []const u8,
+        "fixture_dir",
+        "Directory holding *_golden.json (default: ./fixtures)",
+    ) orelse b.pathFromRoot("fixtures");
+    const fixture_opts = b.addOptions();
+    fixture_opts.addOption([]const u8, "fixture_dir", fixture_dir);
+    fixture_opts.addOption(bool, "require_fixtures", require_fixtures);
+
+    const pyramid_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/pyramid_fixtures.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "borealkernel", .module = root_module },
+                .{ .name = "build_options", .module = fixture_opts.createModule() },
+            },
+        }),
+    });
+    const run_pyramid_tests = b.addRunArtifact(pyramid_tests);
+
+    const oklab_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/oklab_fixtures.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "borealkernel", .module = root_module },
+                .{ .name = "build_options", .module = fixture_opts.createModule() },
+            },
+        }),
+    });
+    const run_oklab_tests = b.addRunArtifact(oklab_tests);
+
+    const giftarget_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/giftarget_fixtures.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "borealkernel", .module = root_module },
+                .{ .name = "build_options", .module = fixture_opts.createModule() },
+            },
+        }),
+    });
+    const run_giftarget_tests = b.addRunArtifact(giftarget_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_dng_tests.step);
     test_step.dependOn(&run_lslcd_tests.step);
+    test_step.dependOn(&run_pyramid_tests.step);
+    test_step.dependOn(&run_oklab_tests.step);
+    test_step.dependOn(&run_giftarget_tests.step);
 
     // Standalone diagnostic: decode the airdropped iPhone DNG and print
     // sample stats. Not part of `zig build test` — opt in with

@@ -22,6 +22,11 @@ pub const lut      = @import("lut.zig");
 pub const tiff     = @import("tiff.zig");
 pub const demosaic = @import("demosaic.zig");
 pub const color    = @import("color.zig");
+pub const pyramid  = @import("pyramid.zig");
+pub const oklab    = @import("oklab.zig");
+pub const reduce   = @import("reduce.zig");
+pub const giftarget = @import("giftarget.zig");
+pub const srgb_table = @import("srgb_table.zig");
 
 /// Status codes — matches `bk_status_t` enum in BorealKernel.h.
 pub const Status = enum(c_int) {
@@ -514,6 +519,96 @@ export fn bk_slow_fold_session(
         out_scalars,
     );
     return @intFromEnum(Status.ok);
+}
+
+/// Embedded S-transform pyramid: image (side² i32, row-major) → coefficient
+/// bands (side² i32, prefix layout: top base² row-major, then detail level
+/// with quad-grid side s at [s², 4·s²) as interleaved (LH,HL,HH) per quad).
+/// The 16×16 latent is the prefix; back-trace is exact inverse transform.
+/// side/base must be powers of two, base ≤ side. Caller owns ALL buffers;
+/// `scratch` must hold (side·side)/2 elements.
+export fn bk_pyramid_analyze(
+    img: [*]const i32,
+    side: u32,
+    base: u32,
+    out_bands: [*]i32,
+    scratch: [*]i32,
+) c_int {
+    const n = @as(usize, side) * @as(usize, side);
+    const ok = pyramid.analyze(img[0..n], side, base, out_bands[0..n], scratch[0 .. n / 2]);
+    return if (ok) @intFromEnum(Status.ok) else @intFromEnum(Status.bad_dimensions);
+}
+
+/// Exact inverse of bk_pyramid_analyze: bands (prefix layout) → image.
+/// Same side/base/scratch contract.
+export fn bk_pyramid_synthesize(
+    bands: [*]const i32,
+    side: u32,
+    base: u32,
+    out_img: [*]i32,
+    scratch: [*]i32,
+) c_int {
+    const n = @as(usize, side) * @as(usize, side);
+    const ok = pyramid.synthesize(bands[0..n], side, base, out_img[0..n], scratch[0 .. n / 2]);
+    return if (ok) @intFromEnum(Status.ok) else @intFromEnum(Status.bad_dimensions);
+}
+
+/// DNG → LAB, last link: interleaved linear-ProPhoto f32 RGB (the output
+/// of bk_apply_color_matrix) → interleaved Q16 OKLab i32 — the pyramid's
+/// exact integer domain. Deterministic by construction (owned cbrt, pinned
+/// op order, f64 math); gated bit-exact by fixtures/colorpath_golden.json.
+export fn bk_oklab_q16_from_prophoto(
+    rgb: [*]const f32,
+    n_px: usize,
+    out: [*]i32,
+) void {
+    oklab.quantizeProPhotoToOklab(rgb[0 .. 3 * n_px], out[0 .. 3 * n_px]);
+}
+
+/// Linear-light box downsample: interleaved RGB f32 (width×height) → RGB f32
+/// ((width/k)×(height/k)). k must divide both dimensions. Deterministic
+/// (single f64 accumulator per channel, pinned order); gated bit-exact by
+/// the boxReduce section of fixtures/colorpath_golden.json.
+export fn bk_box_reduce_rgb(
+    rgb: [*]const f32,
+    width: u32,
+    height: u32,
+    k: u32,
+    out: [*]f32,
+) void {
+    const w: usize = width;
+    const h: usize = height;
+    const kk: usize = k;
+    reduce.boxReduceRgb(rgb[0 .. 3 * w * h], w, h, kk, out[0 .. 3 * (w / kk) * (h / kk)]);
+}
+
+/// GIF-target index map: planar Q16 OKLab pixels vs the 256-entry planar Q16
+/// seed palette → u8 indices. Integer i64 argmin, ties → lowest index.
+/// Gated bit-exact by fixtures/giftarget_golden.json.
+export fn bk_index_map(
+    px_l: [*]const i32,
+    px_a: [*]const i32,
+    px_b: [*]const i32,
+    n_px: usize,
+    pal_l: [*]const i32,
+    pal_a: [*]const i32,
+    pal_b: [*]const i32,
+    out: [*]u8,
+) void {
+    giftarget.indexMap(px_l[0..n_px], px_a[0..n_px], px_b[0..n_px],
+        pal_l[0..256], pal_a[0..256], pal_b[0..256], out[0..n_px]);
+}
+
+/// Display path: planar Q16 OKLab → interleaved sRGB8 (3·n_px bytes out).
+/// Ottosson inverse literals + the GENERATED normative encode table.
+export fn bk_oklab_q16_to_srgb8(
+    px_l: [*]const i32,
+    px_a: [*]const i32,
+    px_b: [*]const i32,
+    n_px: usize,
+    out: [*]u8,
+) void {
+    giftarget.srgb8Batch(px_l[0..n_px], px_a[0..n_px], px_b[0..n_px], out[0 .. 3 * n_px]);
 }
 
 test "root: status enum stays in sync with bridging header values" {

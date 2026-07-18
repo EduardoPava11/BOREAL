@@ -168,6 +168,102 @@ enum Kernel {
         return out
     }
 
+    // ── 16-LAB latent chain (BOREAL-16LAB-DESIGN.md L2 steps 6-8) ──────────
+
+    /// Linear-light box downsample: interleaved RGB f32 → RGB f32 at
+    /// (width/k)×(height/k). Runs BEFORE OKLab (averaging light is only
+    /// correct in linear space). k must divide both dimensions.
+    static func boxReduceRGB(_ rgb: [Float], width: Int, height: Int, factor: Int) -> [Float] {
+        let ow = width / factor, oh = height / factor
+        var out = [Float](repeating: 0, count: ow * oh * 3)
+        rgb.withUnsafeBufferPointer { p in
+            out.withUnsafeMutableBufferPointer { o in
+                bk_box_reduce_rgb(p.baseAddress, UInt32(width), UInt32(height),
+                                  UInt32(factor), o.baseAddress)
+            }
+        }
+        return out
+    }
+
+    /// Linear ProPhoto RGB → interleaved Q16 OKLab i32 (the pyramid's exact
+    /// integer domain; owned deterministic cbrt in Zig).
+    static func oklabQ16(fromProPhoto rgb: [Float]) -> [Int32] {
+        let nPx = rgb.count / 3
+        var out = [Int32](repeating: 0, count: nPx * 3)
+        rgb.withUnsafeBufferPointer { p in
+            out.withUnsafeMutableBufferPointer { o in
+                bk_oklab_q16_from_prophoto(p.baseAddress, nPx, o.baseAddress)
+            }
+        }
+        return out
+    }
+
+    /// Exact integer S-transform pyramid: side² i32 image → side² i32 bands in
+    /// prefix layout (bands[0..base²) IS the base-rung latent; every prefix is
+    /// a rung; back-trace is exact inverse). nil on invalid sides.
+    static func pyramidAnalyze(_ img: [Int32], side: Int, base: Int = 16) -> [Int32]? {
+        var bands = [Int32](repeating: 0, count: side * side)
+        var scratch = [Int32](repeating: 0, count: side * side / 2)
+        let status = img.withUnsafeBufferPointer { p in
+            bands.withUnsafeMutableBufferPointer { b in
+                scratch.withUnsafeMutableBufferPointer { s in
+                    bk_pyramid_analyze(p.baseAddress, UInt32(side), UInt32(base),
+                                       b.baseAddress, s.baseAddress)
+                }
+            }
+        }
+        return status == 0 ? bands : nil
+    }
+
+    /// Exact inverse of pyramidAnalyze on a PREFIX: bands[0..side²) of a
+    /// larger buffer are themselves the complete rung-`side` encoding.
+    static func pyramidSynthesize(_ bands: [Int32], side: Int, base: Int = 16) -> [Int32]? {
+        var img = [Int32](repeating: 0, count: side * side)
+        var scratch = [Int32](repeating: 0, count: max(1, side * side / 2))
+        let status = bands.withUnsafeBufferPointer { p in
+            img.withUnsafeMutableBufferPointer { o in
+                scratch.withUnsafeMutableBufferPointer { s in
+                    bk_pyramid_synthesize(p.baseAddress, UInt32(side), UInt32(base),
+                                          o.baseAddress, s.baseAddress)
+                }
+            }
+        }
+        return status == 0 ? img : nil
+    }
+
+    /// GIF-target index map: planar Q16 OKLab pixels against the 256-entry
+    /// planar seed palette → u8 indices (i64 argmin, ties → lowest).
+    static func indexMap(L: [Int32], a: [Int32], b: [Int32],
+                         palL: [Int32], palA: [Int32], palB: [Int32]) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: L.count)
+        L.withUnsafeBufferPointer { pl in a.withUnsafeBufferPointer { pa in
+            b.withUnsafeBufferPointer { pb in palL.withUnsafeBufferPointer { ql in
+                palA.withUnsafeBufferPointer { qa in palB.withUnsafeBufferPointer { qb in
+                    out.withUnsafeMutableBufferPointer { o in
+                        bk_index_map(pl.baseAddress, pa.baseAddress, pb.baseAddress, L.count,
+                                     ql.baseAddress, qa.baseAddress, qb.baseAddress, o.baseAddress)
+                    }
+                }}
+            }}
+        }}
+        return out
+    }
+
+    /// Display path: planar Q16 OKLab → interleaved sRGB8 bytes (3n), via the
+    /// generated normative encode table (deterministic, never pow at runtime).
+    static func oklabQ16ToSRGB8(L: [Int32], a: [Int32], b: [Int32]) -> [UInt8] {
+        var out = [UInt8](repeating: 0, count: 3 * L.count)
+        L.withUnsafeBufferPointer { pl in a.withUnsafeBufferPointer { pa in
+            b.withUnsafeBufferPointer { pb in
+                out.withUnsafeMutableBufferPointer { o in
+                    bk_oklab_q16_to_srgb8(pl.baseAddress, pa.baseAddress, pb.baseAddress,
+                                          L.count, o.baseAddress)
+                }
+            }
+        }}
+        return out
+    }
+
     /// Encode interleaved RGB f32 as a 32-bit-float HDR TIFF, optionally tagging
     /// it with an embedded ICC profile (color DATA, sourced by Swift per the
     /// ownership rule — the Zig encoder just memcpy's the blob into the tag).
