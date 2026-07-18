@@ -70,3 +70,10 @@ test-one:
 
 list:
 	@for f in $(CORE); do echo "  $$f"; done
+
+# Replay a device LAB report bundle through the same kernels on the Mac
+# and assert bit-exact agreement: make verify-device DIR=~/Downloads
+verify-device:
+	@mkdir -p _build
+	swiftc -O ../BOREAL/Kernels/*.swift verify-device/main.swift -o _build/verify-device
+	_build/verify-device $(DIR)
