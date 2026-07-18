@@ -134,7 +134,12 @@ enum Kernel {
 
     static func indexMap(L: [Int32], a: [Int32], b: [Int32],
                          palL: [Int32], palA: [Int32], palB: [Int32]) -> [UInt8] {
-        BorealKernels.indexMap(L: L, a: a, b: b, palL: palL, palA: palA, palB: palB)
+        // Metal when available (bit-identical — integer math, same tie rule,
+        // gate-proven); CPU reference otherwise.
+        MetalIndexMapper.shared?.map(L: L, a: a, b: b,
+                                     palL: palL, palA: palA, palB: palB)
+            ?? BorealKernels.indexMap(L: L, a: a, b: b,
+                                      palL: palL, palA: palA, palB: palB)
     }
 
     static func oklabQ16ToSRGB8(L: [Int32], a: [Int32], b: [Int32]) -> [UInt8] {

@@ -114,6 +114,23 @@ for c in ev["cases"] as! [[String: Any]] {
         die("relativeExposures drift in case \(c["name"] ?? "?"): \(got) vs \(want)")
     }
 }
+// GPU parity (M2): the Metal index map must be bit-identical to the CPU
+// reference on the goldens. Skips (loudly) when no Metal device exists.
+if let gpu = MetalIndexMapper.shared {
+    guard let gGot = gpu.map(L: ints32(pr["q16L"]), a: ints32(pr["q16a"]),
+                             b: ints32(pr["q16b"]),
+                             palL: palL, palA: palA, palB: palB)
+    else { die("Metal index map returned nil") }
+    if gGot != bytes(fx["indices"]) { die("METAL index map drift vs golden") }
+    guard let gSelf = gpu.map(L: palL, a: palA, b: palB,
+                              palL: palL, palA: palA, palB: palB)
+    else { die("Metal self-index returned nil") }
+    if gSelf != (0...255).map({ UInt8($0) }) { die("METAL A2 self-indexing broken") }
+    print("  metal: index map GPU parity OK")
+} else {
+    print("  metal: no device — GPU parity SKIPPED")
+}
+
 if !BorealKernels.fuseSelfTest() { die("fuse self-test failed") }
 if !BorealKernels.sceneSelfTest() { die("scene self-test failed") }
 if !BorealKernels.dngSelfTest() { die("DNG self-test failed") }

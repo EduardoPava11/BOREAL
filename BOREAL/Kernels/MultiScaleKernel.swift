@@ -27,14 +27,44 @@ extension BorealKernels {
 
     /// One rung's demosaic: per-CFA-channel f64 means (y-outer x-inner within
     /// each cell), camera→ProPhoto, OKLab Q16 planes.
+    ///
+    /// Cell rows are distributed across cores (M2): every cell's arithmetic
+    /// is fully independent and unchanged, so the result is bit-identical to
+    /// the serial walk regardless of scheduling — the gate proves it against
+    /// the goldens on every run.
     static func msComputeRung(mosaic: [Float], side: Int, cfa: UInt32, m: [Double],
                               rung: Int,
                               outL: inout [Int32], outA: inout [Int32],
                               outB: inout [Int32], at offset: Int) {
+        mosaic.withUnsafeBufferPointer { mosaicP in
+            outL.withUnsafeMutableBufferPointer { lP in
+                outA.withUnsafeMutableBufferPointer { aP in
+                    outB.withUnsafeMutableBufferPointer { bP in
+                        DispatchQueue.concurrentPerform(iterations: rung) { cy in
+                            computeRungRow(mosaic: mosaicP, side: side, cfa: cfa,
+                                           m: m, rung: rung, cy: cy,
+                                           outL: lP, outA: aP, outB: bP,
+                                           at: offset)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// One row of rung cells (disjoint output indices per row — safe to run
+    /// rows concurrently).
+    private static func computeRungRow(mosaic: UnsafeBufferPointer<Float>,
+                                       side: Int, cfa: UInt32, m: [Double],
+                                       rung: Int, cy: Int,
+                                       outL: UnsafeMutableBufferPointer<Int32>,
+                                       outA: UnsafeMutableBufferPointer<Int32>,
+                                       outB: UnsafeMutableBufferPointer<Int32>,
+                                       at offset: Int) {
         let k = side / rung
         let isRGGB = cfa == 0
         let quarter = Double((k / 2) * (k / 2))
-        for cy in 0..<rung {
+        do {
             for cx in 0..<rung {
                 var sr = 0.0, sg = 0.0, sb = 0.0
                 for y in (cy * k)..<((cy + 1) * k) {
