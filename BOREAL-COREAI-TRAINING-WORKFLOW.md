@@ -52,13 +52,20 @@ in 3), AOT-compiled, run on one ComputeStream.
 
 ## N0 — Data plumbing (feeds everything)
 
-- The app's fractal-segmentation slice (pending): capture emits each
+- The app's fractal-segmentation slice (DONE): capture emits each
   frame as the (16x16)x(16x16) structure — seed + patches — with the
   BA5 delta lists between the batch's frames; L plane first-class.
+  FractalKernel (patchMajor + delta primitives, harness-verified vs
+  battle_golden.json), Outcome.frameL, report.json fractal + deltas
+  sections (BA5 round-trip asserted at write time).
 - Synthetic generator (exists) + report bundles (exist; one real
-  bundle in hand). Loader parity: G-a, standing.
-- Exit: a training record = {L fractal structure, deltas, EV trace}
-  per cycle, identical from synth and device.
+  bundle in hand). Loader parity: G-a, standing. nn/v1/record.py is
+  the shared contract: synth_record / load_device_record / validate —
+  one schema, both sources.
+- Exit MET on the synth leg: a training record = {L fractal
+  structure, deltas, EV trace} per cycle, identical from synth and
+  device. The device leg needs ONE re-capture (the in-hand bundle is
+  pre-N0; loader detects and says so).
 
 ## N1 — The L-net (the structure; the regimen R1-R4 governs)
 

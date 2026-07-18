@@ -26,6 +26,7 @@ import Data.Ratio (denominator, numerator)
 import Data.Word (Word32, Word64)
 import System.Directory (createDirectoryIfMissing)
 
+import Boreal.Battle
 import Boreal.Binomial
 import Boreal.ColorPath
 import Boreal.CycleSet
@@ -416,6 +417,32 @@ binomialJson = jObj
       | s <- take n (iterate (\x -> x * 6364136223846793005
                                       + 1442695040888963407) (fromIntegral seed :: Integer)) ]
 
+-- ── Battle fixture (BA5: the temporal delta primitive) ─────────
+
+battleJson :: String
+battleJson = jObj
+  [ ("conventions", jObj
+      [ ("delta", jStr "frameDelta a b = [(pos, new)] at positions where a and b differ, ascending; applyDelta a (frameDelta a b) == b EXACTLY (BA5); churn = list length")
+      , ("patchMajor", jStr "the fractal record's ordering: patch (v,u) outer row-major, inner (j,i) row-major - H2/PatchGrid; pos = (v*16+u)*256 + (j*16+i) on the 256x256 ceiling")
+      ])
+  , ("fixture", jObj
+      [ ("a",        jInts frA)
+      , ("b",        jInts frB)
+      , ("deltaPos", jInts (map fst dl))
+      , ("deltaNew", jInts (map snd dl))
+      , ("churn",    show (churn frA frB))
+      ])
+  ]
+  where
+    frA = baLcg 5 4096
+    frB = baLcg 11 4096
+    dl  = frameDelta frA frB
+    baLcg seed n =
+      [ fromIntegral ((s `div` 65536) `mod` 256)
+      | s <- take n (iterate (\x -> x * 6364136223846793005
+                                      + 1442695040888963407)
+                             (fromIntegral (seed :: Int) :: Integer)) ]
+
 -- ── Geometry fixture ───────────────────────────────────────────
 
 geometryJson :: String
@@ -448,6 +475,7 @@ main = do
   emit "gifwire_golden.json" gifwireJson
   emit "cycleset_golden.json" cyclesetJson
   emit "binomial_golden.json" binomialJson
+  emit "battle_golden.json" battleJson
   writeFile "../BOREAL/Kernels/SRGBTable.swift" srgbTableSwift
   putStrLn "  wrote ../BOREAL/Kernels/SRGBTable.swift (generated)"
   putStrLn "GOLDENS EMITTED"

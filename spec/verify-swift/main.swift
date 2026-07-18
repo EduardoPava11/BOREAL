@@ -150,6 +150,16 @@ for f in bn["fixtures"] as! [[String: Any]] {
     }
 }
 
+// Battle (BA5): the temporal delta primitive vs the golden, exact.
+let bt = loadJSON("\(dir)/battle_golden.json")["fixture"] as! [String: Any]
+let btA = bytes(bt["a"]), btB = bytes(bt["b"])
+let d = BorealKernels.frameDelta(btA, btB)
+if d.pos != ints32(bt["deltaPos"]) { die("battle deltaPos drift") }
+if d.new != bytes(bt["deltaNew"]) { die("battle deltaNew drift") }
+if BorealKernels.churn(btA, btB) != Int(truncating: bt["churn"] as! NSNumber) { die("battle churn drift") }
+if BorealKernels.applyDelta(btA, pos: d.pos, new: d.new) != btB { die("BA5 round-trip drift") }
+if !BorealKernels.fractalSelfTest() { die("fractal ordering self-test failed") }
+
 if !BorealKernels.fuseSelfTest() { die("fuse self-test failed") }
 if !BorealKernels.sceneSelfTest() { die("scene self-test failed") }
 if !BorealKernels.dngSelfTest() { die("DNG self-test failed") }

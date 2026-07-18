@@ -405,6 +405,18 @@ def main():
         chi2 = sum((c - exp) ** 2 for c in counts) * 256 / n
         assert chi2 == f['chi2F64'], f"binomial chi2 drift: {f['name']}"
 
+    # ── battle: the BA5 temporal delta primitive ─────────────────────────
+    bt = json.load(open('battle_golden.json'))['fixture']
+    a, b = bt['a'], bt['b']
+    delta = [(i, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
+    assert [p for p, _ in delta] == bt['deltaPos'], 'battle deltaPos drift'
+    assert [v for _, v in delta] == bt['deltaNew'], 'battle deltaNew drift'
+    assert len(delta) == int(bt['churn']), 'battle churn drift'
+    applied = list(a)
+    for p, v in delta:
+        applied[p] = v
+    assert applied == b, 'BA5 round-trip drift'
+
     print('ORACLE GREEN: all fixtures match independent re-computation')
 
 

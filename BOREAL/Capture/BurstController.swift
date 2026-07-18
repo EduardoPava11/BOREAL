@@ -57,12 +57,23 @@ final class BurstController {
         let b: [Int32]
     }
 
+    /// Per-frame L fractal record (N0): the frame's own 16² seed-L —
+    /// the 256 options — plus its ceiling-rung L reordered into the
+    /// (16×16)×(16×16) patch-major structure (H2: each option's home
+    /// patch is one contiguous 256-run). L plane FIRST-CLASS; a/b ride
+    /// only inside the index maps until the chroma nets (N2).
+    struct FrameL: Sendable {
+        let seedL: [Int32]                   // 256, Q16
+        let patchesL: [Int32]                // 65536, patch-major (H2)
+    }
+
     /// Per-cycle reduction outcome. `plan` is the ETTR solver's suggested EV
     /// vector for a FUTURE cycle (raw, unclamped — the loop applies the
     /// P1-P4 mapping); `actualEV` is the cycle's EXIF-derived exposure
     /// ratios; `frameIndices` are the cycle's 4 PER-FRAME ceiling-rung GIF
     /// index maps (each frame EV-normalized by its own e_t, multi-scale
-    /// demosaiced, indexed against the governing palette).
+    /// demosaiced, indexed against the governing palette); `frameL` is the
+    /// cycle's 4 fractal L records (adds ~1 MB/cycle).
     struct Outcome: Sendable {
         let index: Int
         let ok: Bool
@@ -71,6 +82,7 @@ final class BurstController {
         let plan: [Float]?
         let actualEV: [Float]
         let frameIndices: [[UInt8]]
+        let frameL: [FrameL]
     }
 
     enum Phase: Equatable {
@@ -241,7 +253,8 @@ final class BurstController {
                                    governing: PaletteQ16? = nil) -> Outcome {
         func fail(_ note: String) -> Outcome {
             Outcome(index: cycle.index, ok: false, note: note, bands: nil,
-                    plan: nil, actualEV: [1, 1, 1, 1], frameIndices: [])
+                    plan: nil, actualEV: [1, 1, 1, 1], frameIndices: [],
+                    frameL: [])
         }
 
         // 1. Decode (device-proven dng.zig path; EXIF rides along for fuse).
@@ -301,6 +314,8 @@ final class BurstController {
                                           b: Array(bands.b[0..<256]))
         var frameIndices: [[UInt8]] = []
         frameIndices.reserveCapacity(4)
+        var frameL: [FrameL] = []
+        frameL.reserveCapacity(4)
         for (j, frame) in cropped.enumerated() {
             let invE = actualEV[j] > 0 ? 1 / actualEV[j] : 1
             let mosaic = Kernel.normalizeMosaic(frame, invE: invE)
@@ -313,12 +328,18 @@ final class BurstController {
             else { return fail("per-frame render failed at frame \(j + 1)") }
             frameIndices.append(Kernel.indexMap(L: iL, a: iA, b: iB,
                                                 palL: pal.L, palA: pal.a, palB: pal.b))
+            // N0 fractal record: this frame's OWN 16² seed-L + its ceiling
+            // L in the H2 patch-major structure (only defined at 256²).
+            if ceiling == 256 {
+                frameL.append(FrameL(seedL: Array(fs.L[0..<256]),
+                                     patchesL: Kernel.patchMajor(iL)))
+            }
         }
 
         return Outcome(index: cycle.index, ok: true,
                        note: "S=\(side) → multi-scale \(ceiling)² stack + 4 frames",
                        bands: bands, plan: plan, actualEV: actualEV,
-                       frameIndices: frameIndices)
+                       frameIndices: frameIndices, frameL: frameL)
     }
 
     /// Largest 256·2^j ≤ min(width, height), capped at the spec canonical

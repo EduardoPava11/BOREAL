@@ -165,6 +165,22 @@ enum Kernel {
         return out
     }
 
+    // ── Fractal record + temporal deltas (N0: the training food) ───────────
+
+    /// The (16×16)×(16×16) H2 ordering — only defined at the 256² ceiling.
+    static func patchMajor(_ frame: [Int32]) -> [Int32] {
+        BorealKernels.patchMajor(frame)
+    }
+
+    /// BA5: the lossless defection list between consecutive frames.
+    static func frameDelta(_ a: [UInt8], _ b: [UInt8]) -> (pos: [Int32], new: [UInt8]) {
+        BorealKernels.frameDelta(a, b)
+    }
+
+    static func applyDelta(_ a: [UInt8], pos: [Int32], new: [UInt8]) -> [UInt8] {
+        BorealKernels.applyDelta(a, pos: pos, new: new)
+    }
+
     // ── Live exposure read-out (the pre-shutter overlay) ───────────────────
 
     struct ChannelHistogram: Sendable {

@@ -112,6 +112,41 @@ enum CycleReport {
                     return (String(rung), entry)
                 })
 
+            // ── N0: the training record ─────────────────────────────────
+            // The (16×16)×(16×16) fractal structure per frame (L plane
+            // first-class: this frame's own 16² seed-L options + its
+            // ceiling L in the H2 patch-major ordering), and the BA5
+            // temporal deltas between the batch's consecutive frames.
+            // {L fractal structure, deltas, EV trace} — identical shape
+            // from synth and device (the "ev" section above is the trace).
+            if !outcome.frameL.isEmpty {
+                json["fractal"] = [
+                    "ordering": "patch-major: patch (v,u) outer row-major, inner (j,i) row-major (H2/PatchGrid); pos=(v*16+u)*256+(j*16+i)",
+                    "frames": outcome.frameL.map { f in
+                        ["seedL": f.seedL.map(Int.init),
+                         "patchesL": f.patchesL.map(Int.init)]
+                    },
+                ]
+            }
+            if outcome.frameIndices.count == 4 {
+                var deltas: [[String: Any]] = []
+                for t in 0..<3 {
+                    let a = outcome.frameIndices[t], b = outcome.frameIndices[t + 1]
+                    let d = Kernel.frameDelta(a, b)
+                    guard Kernel.applyDelta(a, pos: d.pos, new: d.new) == b else {
+                        return .failure(BuildError(message: "BA5 round-trip failed at t=\(t)"))
+                    }
+                    deltas.append(["from": t, "to": t + 1,
+                                   "pos": d.pos.map(Int.init),
+                                   "new": d.new.map(Int.init),
+                                   "churn": d.pos.count])
+                }
+                json["deltas"] = [
+                    "note": "BA5 defection lists between the cycle's consecutive per-frame index maps; applyDelta(frame_t, delta) == frame_t+1 EXACTLY (verified at write time); churn = list length",
+                    "list": deltas,
+                ]
+            }
+
             let jsonURL = dir.appendingPathComponent("report.json")
             let data = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
             try data.write(to: jsonURL)
