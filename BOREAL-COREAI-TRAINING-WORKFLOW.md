@@ -160,6 +160,47 @@ PREDICTS (gradients, Mac), the laws judge. Three tiers:
   captures flow back as fractal records and become the next
   generation's environment.
 
+## Session sunset — 2026-07-18 (state of play)
+
+Where this session left the program (commits 0389f82 -> d8c95c8;
+gate 16 law files / 87 laws + oracle + Swift harness green; sim
+build green; tree clean):
+
+  DONE
+  - N0: the app emits the fractal training record. FractalKernel
+    (patchMajor + BA5 delta primitives, golden-verified), Outcome
+    .frameL, report.json "fractal" + "deltas" (round-trip asserted
+    at write time), nn/v1/record.py = the one contract for synth
+    and device records.
+  - The three-tier boundary (section above): battle on device,
+    adapters/selection around the frozen .aimodel, gradients on
+    the Mac. Selection on device, mutation on the Mac.
+  - Synth is device-real: 12-bit ADC (black 528 / white 4095),
+    read noise, saturation, EV ratios [1, 3.66, 15, 62.5], deep
+    shadows, ETTR coupling. Churn varies naturally (54-94%).
+  - Trainer: residual-to-classic (N3 as architecture; step-1 hard
+    metrics == noisy baseline exactly), scale-adaptive tau + R3
+    anneal, R2 home term, bell-consistent judge (the bell is the
+    OUTPUT TONAL SPACE; targets histogram-specified through the
+    induced monotone map; baselines judged identically).
+  - 400-step evidence: dE 0.0086 -> 0.0066-0.0074 vs clean-classic
+    0.0067 (denoising gap recovered); chi2 66.7k -> 17-21k (clean
+    14.3k); homeShare 0.306 -> 0.338 (clean 0.352).
+
+  NEXT SESSION, IN ORDER
+  1. ONE device re-capture with this build — the first real
+     fractal bundle (the in-hand bundle is pre-N0; record.py
+     detects it). It becomes the held-out eval.
+  2. N1 gates: chi2 and homeShare still trail clean classic.
+     Levers queued: longer runs, sigma-guided curriculum, the
+     battle inner loop (defection dynamics on the index
+     territory), lr schedule.
+  3. C0 logbook telemetry (capture -> encoding trace in bundles).
+  4. Then N2 (chroma pair vs the 55% aliasing share) per phases.
+
+  OPEN DECISIONS carried: D1 GCT-vs-LCT, D6 bell<->tesseract,
+  3 Core AI SDK questions (Xcode 27 beta).
+
 ## Standing rules
 
   laws judge, losses train . classic always printed . 255n tripwire
