@@ -22,8 +22,9 @@ HIERARCHY = hierarchy/HierarchyLaws.hs
 THEOREM   = theorem/MaxSignalLaws.hs
 DITHERWALK = ditherwalk/DitherWalkLaws.hs
 TESSGRID  = tessgrid/TessGridLaws.hs
+BATTLE    = battle/BattleLaws.hs
 
-CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM) $(DITHERWALK) $(TESSGRID)
+CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM) $(DITHERWALK) $(TESSGRID) $(BATTLE)
 
 # ── Targets ──────────────────────────────────────────────
 

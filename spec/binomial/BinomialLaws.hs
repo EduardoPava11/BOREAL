@@ -63,7 +63,7 @@ lawDyadicExact =
 
 -- V1f — THE BEAUTY BAND (Daniel's criterion; FLAG_BEAUTY lineage):
 --   beauty is FIT TO THE BINOMIAL, not uniformity. A fair random
---   assignment has E[chi^2] = 255·(255/256) ~ 254; perfectly equal
+--   assignment has E[chi^2] = 255 EXACTLY (BA3 proves it); equal
 --   counts (chi^2 = 0) are sterile; concentration (device capture:
 --   20205) is collapse. The target is the BAND around 255. The rate
 --   price of beauty over perfection is chi^2/(2 ln 2) ~ 184 bits per
