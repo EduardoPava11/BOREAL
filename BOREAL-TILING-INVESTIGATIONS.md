@@ -27,7 +27,16 @@ inter-scale disagreement is chroma-dominated — the Bayer tiling's
 modulated-chroma aliasing (Alleysson) surviving our box means. This is
 the NN's biggest quantified win condition, and it is a TILING artifact.
 
-## I1 — Anisotropy attribution (extends I0-A)
+REFOCUS (Daniel, 2026-07-17): the priority investigation is the FORMAL
+VERIFICATION of the core mechanism — macro 16x16 seeds the colors, the
+dithering WALKS to populate the 256x256 — now landed as DW1-DW6
+(spec/ditherwalk). Speed is first-class (competing with 6teen3 while
+encoding DNGs + training): the walk is the fast path (25 vs 256 evals,
+L1 by construction). I1 is DEPRIORITIZED (the GIF can always be
+rotated); I6's premise is ACCEPTED as given (shake is inevitable —
+that is WHY the EV re-plans every 4 frames), not an alignment project.
+
+## I1 — Anisotropy attribution (extends I0-A) [DEPRIORITIZED]
 
 Q: is the up-tile anisotropy systematic (tiling/CFA) or scene?
 Method: (a) more bundles, varied scenes/orientations (rotate the phone
@@ -78,7 +87,7 @@ lineage) if seams are hot.
 Decides: whether V1-H's patch predictor needs overlap context beyond
 3x3 latent mixing; whether the cube's temporal tiles (cycles) seam.
 
-## I6 — Tiling in time
+## I6 — Tiling in time [PREMISE ACCEPTED; not an alignment project]
 
 Q: is the cycle tiling of the burst (16 x 4, and the x4 frame-hold)
 the right temporal tiling, and what do bursts buy de-Bayering?

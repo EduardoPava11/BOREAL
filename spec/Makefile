@@ -20,8 +20,9 @@ CYCLESET  = cycleset/CycleSetLaws.hs
 BINOMIAL  = binomial/BinomialLaws.hs
 HIERARCHY = hierarchy/HierarchyLaws.hs
 THEOREM   = theorem/MaxSignalLaws.hs
+DITHERWALK = ditherwalk/DitherWalkLaws.hs
 
-CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM)
+CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM) $(DITHERWALK)
 
 # ── Targets ──────────────────────────────────────────────
 
