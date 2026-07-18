@@ -75,9 +75,54 @@ teacher). Interfaces frozen since V1 — nothing rearchitects.
   research lands (agents' citations to be folded in here).
   real: LAB report bundles, replayed through the exact pipeline.
 
-## Literature grounding (research in flight; fold citations here)
-  - luminance-carries-signal / chroma-as-cost (vision + coding practice)
-  - chi^2 <-> KL second-order (the T3 bridge's citation)
-  - codebook-usage entropy losses + VQ collapse remedies (the R2/R3
-    parallels in VQ-VAE practice)
-  - compression-as-pretraining (MDL / infomax)
+## Literature grounding (researched + primary-verified 2026-07-17)
+
+LUMINANCE CARRIES THE SIGNAL, CHROMA IS THE COST (T4's grounding):
+  - Mullen 1985 (J. Physiol. 359): chromatic CSF is low-pass, acuity
+    cutoff ~11-12 cyc/deg; luminance wins above 0.5 cyc/deg. Luminance
+    cutoff ~50-60 cyc/deg is Campbell & Robson 1968 (NOT Mullen).
+    Net acuity ratio ~4-5:1.
+  - Ruderman, Cronin & Chiao 1998 (JOSA A 15:2036) + Buchsbaum &
+    Gottschalk 1983: natural scenes decorrelate into one dominant
+    achromatic axis + two opponent chromatic axes (the l-alpha-beta
+    lineage). (The oft-quoted "~90% variance on luminance" is NOT
+    primary-verified - claim direction, not the number.)
+  - Codec practice: 4:2:0 = exactly 50% data reduction, all from
+    chroma; JPEG T.81 Annex K tables quantize chroma 2-3.5x coarser
+    (46/64 chroma coefficients pinned at 99); HEVC-era luma:chroma
+    residual bits ~9:1 (patent-background attestation, secondary).
+
+BALANCED USAGE = MAX RATE - WITH THE CRITICAL FRAMING (T1/T2/T3):
+  - Cover & Thomas 2006 Thm 2.6.4: H(X) <= log|X|, equality IFF
+    uniform. THE citation for T2.
+  - C&T Problem 11.2: chi^2 is twice the first Taylor term of
+    D(P||Q) => KL ~ chi^2/(2n ln2) in bits. THE citation for T3
+    (bit-form is a one-line textbook derivation, not a quoted eq).
+  - CORRECTION (do not misattribute): balanced usage is the
+    optimality condition for a FIXED-RATE size-K codebook WITH NO
+    ENTROPY CODER - which is EXACTLY our regime, BY CONSTRUCTION:
+    the GIF wire's fixed-9-bit LZW (W laws) deliberately does not
+    entropy-code, so nothing downstream absorbs imbalance. Do NOT
+    cite entropy-constrained VQ (Chou-Lookabaugh-Gray 1989) for
+    uniform usage - ECVQ's optimum has NON-uniform probabilities
+    absorbed by variable-length codes; fixed-rate MSE-optimal VQ
+    equalizes distortion, not probability. Our non-compressing wire
+    is what MAKES chi^2 -> 0 the right objective.
+
+CODEBOOK-USAGE ENTROPY AS A LOSS (the R3 term's precedent):
+  - wav2vec 2.0 (Baevski 2020): diversity loss = negative entropy of
+    batch-averaged codeword softmax (alpha = 0.1) - our L_chi2's
+    closest ancestor.
+  - MAGVIT-v2 / LFQ (Yu 2023): E[H(q)] - H(E[q]) - sharpen
+    per-sample, uniformize average usage; enabled a 2^18 codebook.
+  - Our chi^2 term = the SECOND-ORDER SURROGATE of these usage-
+    entropy penalties (via the T3 bridge) - cheaper, exact-checkable.
+  - VQ collapse remedies (EMA updates VQ-VAE 2017, Jukebox restarts,
+    CVQ-VAE online clustering, FSQ) parallel our warm anchor + tripwire.
+
+COMPRESSION AS PRETRAINING (the theorem's banner):
+  - Rissanen 1978 (MDL); Hinton & van Camp / Hinton & Zemel 1993;
+    Linsker 1988 infomax; Bell & Sejnowski 1995.
+  - Deletang 2023 "Language Modeling Is Compression" (ICLR 24);
+    Huang 2024 "Compression Represents Intelligence Linearly"
+    (Pearson ~ -0.94 across 31 LLMs); Sutskever 2023 (talk).

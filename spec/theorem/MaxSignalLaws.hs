@@ -21,6 +21,17 @@
 -- by driving χ² → 0 under the bell's L allocation, spending ΔE
 -- only where chroma buys it.
 --
+-- CITATIONS + REGIME (verified 2026-07-17): T2 is Cover & Thomas
+-- Thm 2.6.4 (H ≤ log|X|, equality iff uniform); T3 is C&T Problem
+-- 11.2 (χ² = twice the first Taylor term of KL) in bits. The
+-- balanced-usage optimality holds for a FIXED-RATE size-256
+-- codebook with NO entropy coder — which the GIF wire's
+-- deliberately non-compressing fixed-9-bit LZW (W laws) makes
+-- literally true by construction. (Entropy-constrained VQ would
+-- absorb imbalance in variable-length codes — not our regime.)
+-- The χ² loss is the second-order surrogate of the usage-entropy
+-- penalties in wav2vec 2.0 and MAGVIT-v2.
+--
 --   T1 exactness: χ² = 0 ⟺ uniform, with the perturbation's
 --      closed form χ²(move k between two colors) = 512·k²/n (ℚ)
 --   T2 capacity: H(balanced) = 8 bits; every probed imbalance is
