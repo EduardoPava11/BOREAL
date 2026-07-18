@@ -35,11 +35,13 @@ final class BurstController {
         let dngs: [Data]
     }
 
-    /// The per-cycle latent product: three band buffers in prefix layout
-    /// (bands[0..256) of each = the 16×16 latent frame) plus the σ head
-    /// (per-cell subtree detail energy across L,a,b — the dither budget).
-    /// ~768 KB per cycle at the 256² ceiling; 16 cycles ≈ 12.3 MB per burst.
+    /// The per-cycle latent product: three MULTI-SCALE residual stacks
+    /// (Phase 3 — each rung its own demosaic; bands[0..256) of each = the
+    /// 16×16 latent frame; a prefix decodes to THE rung-r demosaic) plus
+    /// the σ head (per-cell |residual| energy across L,a,b — the dither
+    /// budget). ~1 MB per cycle at the 2048→256 shape; 16 cycles ≈ 17 MB.
     struct Bands: Sendable {
+        let mosaicSide: Int                  // crop side S (derives the rungs)
         let side: Int                        // ceiling rung actually used
         let L: [Int32]
         let a: [Int32]
@@ -209,39 +211,23 @@ final class BurstController {
         let plan = Kernel.solveETTR(clips: clips, wb: ref.wb)
         let actualEV = Kernel.relativeExposures(cropped)
 
-        // 3-5. Fuse (EV-aware) → demosaic (MHC) → camera→ProPhoto.
+        // 3-4. Fuse (EV-aware) → the custom ISP: demosaic at EVERY scale.
+        // The fused mosaic is scene-linear normalized; bk_ms_encode produces
+        // the per-channel residual stacks directly (rung r = its own
+        // demosaic → camera→ProPhoto → OKLab Q16; MS laws).
         guard let fused = Kernel.fuse(cropped) else { return fail("fuse failed") }
-        var rgb = Kernel.demosaic(fused, width: side, height: side, cfa: ref.cfa)
-        if ref.hasColor {
-            Kernel.applyColor(&rgb, width: side, height: side, matrix: ref.camToPP)
-        }
+        guard let stacks = Kernel.msEncode(mosaic: fused, side: side, cfa: ref.cfa,
+                                           camToPP: ref.camToPP,
+                                           hasColor: ref.hasColor)
+        else { return fail("multi-scale encode failed") }
 
-        // 6-7. Linear box down to the 256² ceiling, then OKLab Q16.
-        let ceiling = 256
-        let small = side == ceiling
-            ? rgb
-            : Kernel.boxReduceRGB(rgb, width: side, height: side, factor: side / ceiling)
-        let q = Kernel.oklabQ16(fromProPhoto: small)
-
-        // 8. Deinterleave → three exact pyramids (L, a, b).
-        let nPx = ceiling * ceiling
-        var chL = [Int32](repeating: 0, count: nPx)
-        var chA = [Int32](repeating: 0, count: nPx)
-        var chB = [Int32](repeating: 0, count: nPx)
-        for i in 0..<nPx {
-            chL[i] = q[3 * i]
-            chA[i] = q[3 * i + 1]
-            chB[i] = q[3 * i + 2]
-        }
-        guard let bL = Kernel.pyramidAnalyze(chL, side: ceiling),
-              let bA = Kernel.pyramidAnalyze(chA, side: ceiling),
-              let bB = Kernel.pyramidAnalyze(chB, side: ceiling)
-        else { return fail("pyramid analyze failed") }
-
-        let bands = Bands(side: ceiling, L: bL, a: bA, b: bB,
-                          sigma: sigmaGrid(side: ceiling, channels: [bL, bA, bB]))
+        let ceiling = Kernel.msRungs(side: side).max() ?? 16
+        let bands = Bands(mosaicSide: side, side: ceiling,
+                          L: stacks.L, a: stacks.a, b: stacks.b,
+                          sigma: sigmaGrid(mosaicSide: side,
+                                           channels: [stacks.L, stacks.a, stacks.b]))
         return Outcome(index: cycle.index, ok: true,
-                       note: "S=\(side) → \(ceiling)² bands", bands: bands,
+                       note: "S=\(side) → multi-scale \(ceiling)² stack", bands: bands,
                        plan: plan, actualEV: actualEV)
     }
 
@@ -277,25 +263,26 @@ final class BurstController {
         return g
     }
 
-    /// σ head: per 16×16 latent cell, the summed |detail| over every pyramid
-    /// level and channel whose subtree lands in that cell (EP5: zero iff the
-    /// cell's block is constant). This is the dither budget / resolution gate.
-    nonisolated private static func sigmaGrid(side: Int, channels: [[Int32]]) -> [Float] {
+    /// σ head: per 16×16 latent cell, the summed |residual| over every
+    /// multi-scale level and channel landing in that cell — how much the
+    /// finer demosaics disagree with the coarser view there. This is the
+    /// dither budget / resolution gate.
+    nonisolated private static func sigmaGrid(mosaicSide: Int,
+                                              channels: [[Int32]]) -> [Float] {
         var acc = [Int64](repeating: 0, count: 16 * 16)
-        var s = 16
-        while s < side {                     // detail level with quad-grid side s
-            let offset = s * s               // prefix layout: level s at [s², 4s²)
-            let cellsPerQuad = s / 16        // quads per latent cell along one axis
-            for bands in channels {
-                for i in 0..<(s * s) {
-                    let r = i / s, c = i % s
-                    let cell = (r / cellsPerQuad) * 16 + (c / cellsPerQuad)
-                    let q = offset + 3 * i
-                    acc[cell] += Int64(abs(bands[q])) + Int64(abs(bands[q + 1]))
-                        + Int64(abs(bands[q + 2]))
+        var offset = 0
+        for (levelIdx, r) in Kernel.msRungs(side: mosaicSide).enumerated() {
+            let n = r * r
+            if levelIdx > 0 {                // residual levels only (base is absolute)
+                for bands in channels {
+                    for p in 0..<n {
+                        let row = p / r, col = p % r
+                        let cell = (row * 16 / r) * 16 + (col * 16 / r)
+                        acc[cell] += Int64(abs(bands[offset + p]))
+                    }
                 }
             }
-            s *= 2
+            offset += n
         }
         return acc.map { Float($0) }
     }

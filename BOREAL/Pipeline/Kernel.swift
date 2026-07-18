@@ -207,6 +207,56 @@ enum Kernel {
         return ev
     }
 
+    // ── Multi-scale demosaic: the custom ISP (Phase 3, MS laws) ────────────
+
+    /// The rungs a mosaic side supports (side%r == 0, side/r even, ≥ 2).
+    static func msRungs(side: Int) -> [Int] {
+        [16, 32, 64, 128, 256].filter {
+            side % $0 == 0 && (side / $0) >= 2 && (side / $0) % 2 == 0
+        }
+    }
+
+    static func msStackLen(side: Int) -> Int { bk_ms_stack_len(UInt32(side)) }
+
+    /// Normalized f32 mosaic → per-channel residual stacks in Q16 OKLab.
+    /// Each rung is its OWN demosaic; a prefix decodes to that rung exactly.
+    static func msEncode(mosaic: [Float], side: Int, cfa: UInt32,
+                         camToPP: [Float], hasColor: Bool)
+        -> (L: [Int32], a: [Int32], b: [Int32])? {
+        let n = msStackLen(side: side)
+        guard n > 0, mosaic.count >= side * side else { return nil }
+        let matrix = camToPP.count == 9 ? camToPP : [1, 0, 0, 0, 1, 0, 0, 0, 1]
+        var L = [Int32](repeating: 0, count: n)
+        var A = [Int32](repeating: 0, count: n)
+        var B = [Int32](repeating: 0, count: n)
+        let status = mosaic.withUnsafeBufferPointer { m in
+            matrix.withUnsafeBufferPointer { c in
+                L.withUnsafeMutableBufferPointer { l in
+                    A.withUnsafeMutableBufferPointer { a in
+                        B.withUnsafeMutableBufferPointer { b in
+                            bk_ms_encode(m.baseAddress, UInt32(side), cfa,
+                                         c.baseAddress, hasColor,
+                                         l.baseAddress, a.baseAddress, b.baseAddress)
+                        }
+                    }
+                }
+            }
+        }
+        return status == 0 ? (L, A, B) : nil
+    }
+
+    /// Decode one channel's prefix back to the rung-r demosaic (MS3).
+    static func msDecode(_ bands: [Int32], mosaicSide: Int, rung: Int) -> [Int32]? {
+        var out = [Int32](repeating: 0, count: rung * rung)
+        let status = bands.withUnsafeBufferPointer { b in
+            out.withUnsafeMutableBufferPointer { o in
+                bk_ms_decode(b.baseAddress, UInt32(mosaicSide), UInt32(rung),
+                             o.baseAddress)
+            }
+        }
+        return status == 0 ? out : nil
+    }
+
     // ── 16-LAB latent chain (BOREAL-16LAB-DESIGN.md L2 steps 6-8) ──────────
 
     /// Linear-light box downsample: interleaved RGB f32 → RGB f32 at

@@ -101,6 +101,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_giftarget_tests = b.addRunArtifact(giftarget_tests);
 
+    const multiscale_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/multiscale_fixtures.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "borealkernel", .module = root_module },
+                .{ .name = "build_options", .module = fixture_opts.createModule() },
+            },
+        }),
+    });
+    const run_multiscale_tests = b.addRunArtifact(multiscale_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_dng_tests.step);
@@ -108,6 +121,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_pyramid_tests.step);
     test_step.dependOn(&run_oklab_tests.step);
     test_step.dependOn(&run_giftarget_tests.step);
+    test_step.dependOn(&run_multiscale_tests.step);
 
     // Standalone diagnostic: decode the airdropped iPhone DNG and print
     // sample stats. Not part of `zig build test` — opt in with

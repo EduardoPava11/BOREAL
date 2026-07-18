@@ -428,6 +428,23 @@ void bk_index_map(const int32_t *px_l, const int32_t *px_a, const int32_t *px_b,
 void bk_oklab_q16_to_srgb8(const int32_t *px_l, const int32_t *px_a,
                            const int32_t *px_b, size_t n_px, uint8_t *out);
 
+/* ── Multi-scale demosaic: the custom ISP (Boreal.MultiScale, MS laws) ───
+ *
+ * Each rung r in {16,32,64,128,256} (side%r==0, side/r even >= 2) is its
+ * OWN demosaic of the normalized mosaic (per-CFA-channel exact mean at
+ * that rung's cell size -> camera->ProPhoto -> OKLab Q16). The latent is
+ * the RESIDUAL STACK per channel: rung16 ++ (rung2s - nearest-up(rungS)),
+ * coarse->fine; prefix through rung r = sum of r'^2 and decodes to THE
+ * rung-r demosaic. Overcomplete by design: every residual is a JEPA
+ * prediction target. bk_ms_stack_len(2048) == 87296. Caller owns all
+ * buffers. Gated bit-exact by fixtures/multiscale_golden.json. */
+size_t bk_ms_stack_len(uint32_t side);
+int bk_ms_encode(const float *mosaic, uint32_t side, uint32_t cfa,
+                 const float *cam_to_pp, bool has_color,
+                 int32_t *out_l, int32_t *out_a, int32_t *out_b);
+int bk_ms_decode(const int32_t *bands, uint32_t side, uint32_t rung,
+                 int32_t *out);
+
 #ifdef __cplusplus
 }
 #endif

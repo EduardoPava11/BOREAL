@@ -26,6 +26,7 @@ pub const pyramid  = @import("pyramid.zig");
 pub const oklab    = @import("oklab.zig");
 pub const reduce   = @import("reduce.zig");
 pub const giftarget = @import("giftarget.zig");
+pub const multiscale = @import("multiscale.zig");
 pub const srgb_table = @import("srgb_table.zig");
 
 /// Status codes — matches `bk_status_t` enum in BorealKernel.h.
@@ -624,6 +625,51 @@ export fn bk_oklab_q16_to_srgb8(
     out: [*]u8,
 ) void {
     giftarget.srgb8Batch(px_l[0..n_px], px_a[0..n_px], px_b[0..n_px], out[0 .. 3 * n_px]);
+}
+
+/// Multi-scale stack length for a mosaic side (Σ r² over its rungs).
+export fn bk_ms_stack_len(side: u32) usize {
+    return multiscale.stackLen(side);
+}
+
+/// The custom ISP (Phase 3): normalized f32 mosaic → per-channel residual
+/// stacks in Q16 OKLab. Each rung is its OWN demosaic; prefix through rung
+/// r decodes to exactly that rung (MS laws). cam_to_pp is the camera →
+/// ProPhoto 3×3 (row-major f32; pass has_color=false to use identity).
+/// Each out buffer holds bk_ms_stack_len(side) i32. Returns BK_OK or
+/// BK_BAD_DIMENSIONS.
+export fn bk_ms_encode(
+    mosaic: [*]const f32,
+    side: u32,
+    cfa: u32,
+    cam_to_pp: [*]const f32,
+    has_color: bool,
+    out_l: [*]i32,
+    out_a: [*]i32,
+    out_b: [*]i32,
+) c_int {
+    var m = [9]f64{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+    if (has_color) {
+        for (0..9) |i| m[i] = cam_to_pp[i];
+    }
+    const n = @as(usize, side) * @as(usize, side);
+    const total = multiscale.stackLen(side);
+    const ok = multiscale.encode(mosaic[0..n], side, cfa, m,
+        out_l[0..total], out_a[0..total], out_b[0..total]);
+    return if (ok) @intFromEnum(Status.ok) else @intFromEnum(Status.bad_dimensions);
+}
+
+/// Decode one channel's prefix back to the rung-r demosaic (rung² i32 out).
+export fn bk_ms_decode(
+    bands: [*]const i32,
+    side: u32,
+    rung: u32,
+    out: [*]i32,
+) c_int {
+    const total = multiscale.stackLen(side);
+    const ok = multiscale.decodeRung(bands[0..total], side, rung,
+        out[0 .. @as(usize, rung) * rung]);
+    return if (ok) @intFromEnum(Status.ok) else @intFromEnum(Status.bad_dimensions);
 }
 
 test "root: status enum stays in sync with bridging header values" {

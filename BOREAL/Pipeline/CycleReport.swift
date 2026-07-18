@@ -47,12 +47,13 @@ enum CycleReport {
         let palB = Array(bands.b[0..<256])
         let palRGB = Kernel.oklabQ16ToSRGB8(L: palL, a: palA, b: palB)
 
-        // Per rung: prefix-decode the image, then the GIF-target index map.
+        // Per rung: decode THE rung-r demosaic from the multi-scale stack
+        // (MS3), then the GIF-target index map.
         var indexMaps: [Int: [UInt8]] = [:]
-        for r in rungs where r <= bands.side {
-            guard let iL = Kernel.pyramidSynthesize(Array(bands.L[0..<r * r]), side: r),
-                  let iA = Kernel.pyramidSynthesize(Array(bands.a[0..<r * r]), side: r),
-                  let iB = Kernel.pyramidSynthesize(Array(bands.b[0..<r * r]), side: r)
+        for r in Kernel.msRungs(side: bands.mosaicSide) {
+            guard let iL = Kernel.msDecode(bands.L, mosaicSide: bands.mosaicSide, rung: r),
+                  let iA = Kernel.msDecode(bands.a, mosaicSide: bands.mosaicSide, rung: r),
+                  let iB = Kernel.msDecode(bands.b, mosaicSide: bands.mosaicSide, rung: r)
             else { return .failure(BuildError(message: "prefix decode failed at rung \(r)")) }
             indexMaps[r] = Kernel.indexMap(L: iL, a: iA, b: iB,
                                            palL: palL, palA: palA, palB: palB)
@@ -67,6 +68,9 @@ enum CycleReport {
 
             var json: [String: Any] = [
                 "design": "BOREAL-16LAB-DESIGN.md",
+                "note2": "bands are MULTI-SCALE residual stacks (MS laws): rung16 ++ (rung2s - nearest-up(rungS)) coarse->fine; prefix through rung r = sum of r'^2 and decodes to THE rung-r demosaic; palette = bands[0..256) (the seed, absolute)",
+                "mosaicSide": bands.mosaicSide,
+                "rungs": Kernel.msRungs(side: bands.mosaicSide),
                 "ev": [
                     "plannedBiases": biases.map { Double($0) },
                     "actualRatios": outcome.actualEV.map { Double($0) },
