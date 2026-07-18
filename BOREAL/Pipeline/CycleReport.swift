@@ -23,8 +23,18 @@ enum CycleReport {
         var description: String { message }
     }
 
-    /// Run the chain and write the bundle. Returns the file URLs to share.
-    nonisolated static func build(dngs: [Data], biases: [Float]) -> Result<[URL], BuildError> {
+    /// Everything the preview surface and the AirDrop bundle need.
+    struct Report: Sendable {
+        let urls: [URL]                  // report.json + rung PNGs + source DNGs
+        let side: Int                    // ceiling rung
+        let paletteRGB: [UInt8]          // 256 × RGB — the seed, display-encoded
+        let indexMaps: [Int: [UInt8]]    // rung → GIF index map
+        let sigma: [Float]               // 256-cell dither budget
+    }
+
+    /// Run the chain and write the bundle. Returns the report (previewable
+    /// in-app AND shareable — the same decode, no second rendering path).
+    nonisolated static func build(dngs: [Data], biases: [Float]) -> Result<Report, BuildError> {
         let cycle = BurstController.Cycle(index: 0, biases: biases, dngs: dngs)
         let outcome = BurstController.reduce(cycle)
         guard outcome.ok, let bands = outcome.bands else {
@@ -93,16 +103,17 @@ enum CycleReport {
                 try dng.write(to: u)
                 urls.append(u)
             }
-            return .success(urls)
+            return .success(Report(urls: urls, side: bands.side, paletteRGB: palRGB,
+                                   indexMaps: indexMaps, sigma: bands.sigma))
         } catch {
             return .failure(BuildError(message: "write failed: \(error.localizedDescription)"))
         }
     }
 
-    /// Palette-mapped render: index map × palette sRGB8 → PNG. This is the
-    /// GIF frame the ISP targets, previewed losslessly.
-    nonisolated private static func renderPNG(indices: [UInt8], side: Int,
-                                              paletteRGB: [UInt8]) -> Data? {
+    /// Palette-mapped CGImage from an index map — the preview IS the product
+    /// decode. Callers upscale with interpolation .none (nearest neighbor).
+    nonisolated static func cgImage(indices: [UInt8], side: Int,
+                                    paletteRGB: [UInt8]) -> CGImage? {
         var pixels = [UInt8](repeating: 255, count: side * side * 4)
         for i in 0..<(side * side) {
             let p = Int(indices[i]) * 3
@@ -113,8 +124,15 @@ enum CycleReport {
         guard let ctx = CGContext(data: &pixels, width: side, height: side,
                                   bitsPerComponent: 8, bytesPerRow: side * 4,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
-              let img = ctx.makeImage()
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { return nil }
+        return ctx.makeImage()
+    }
+
+    /// PNG for the AirDrop bundle, via the same cgImage decode.
+    nonisolated private static func renderPNG(indices: [UInt8], side: Int,
+                                              paletteRGB: [UInt8]) -> Data? {
+        guard let img = cgImage(indices: indices, side: side, paletteRGB: paletteRGB)
         else { return nil }
         let out = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(out, UTType.png.identifier as CFString,

@@ -21,7 +21,7 @@
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>NSCameraUsageDescription</key>
-	<string>BOREAL captures 4 RAW frames to fuse a single high-dynamic-range image.</string>
+	<string>BOREAL captures RAW frames to build its 16×16-seeded GIF.</string>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

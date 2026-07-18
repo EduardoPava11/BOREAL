@@ -43,7 +43,7 @@ targets:
           UIColorName: LaunchBackground   # black → no white flash before the app
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        NSCameraUsageDescription: "BOREAL captures 4 RAW frames to fuse a single high-dynamic-range image."
+        NSCameraUsageDescription: "BOREAL captures RAW frames to build its 16×16-seeded GIF."
         UIRequiredDeviceCapabilities:
           - arm64
           - metal

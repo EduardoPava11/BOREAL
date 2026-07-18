@@ -19,9 +19,6 @@ struct CameraHomeView: View {
     @State private var burst = BurstController()
     @State private var camError: String?
     @State private var busy = false
-    @State private var labBusy = false
-    @State private var labNote: String?
-    @State private var reportURLs: [URL]?
 
     var body: some View {
         ZStack {
@@ -102,23 +99,14 @@ struct CameraHomeView: View {
                 .allowsHitTesting(false)
             }
 
-            // Burst / report status read-out.
-            if let status = burstStatus ?? labNote {
+            // Burst status read-out (visible only while/after a 64-burst).
+            if let status = burstStatus {
                 Text(status)
                     .font(.mono(11))
                     .foregroundStyle(Theme.textDim)
                     .padding(.vertical, 4).padding(.horizontal, 10)
                     .background(.ultraThinMaterial, in: Capsule())
                     .padding(.bottom, 10)
-            }
-            if let urls = reportURLs {
-                ShareLink(items: urls) {
-                    Label("AirDrop 16-LAB report (\(urls.count) files)", systemImage: "square.and.arrow.up")
-                        .font(.mono(11))
-                        .padding(.vertical, 6).padding(.horizontal, 12)
-                        .background(.ultraThinMaterial, in: Capsule())
-                }
-                .padding(.bottom, 10)
             }
 
             // Shutter row: single 4-frame bracket (primary) + 64-burst (16×4).
@@ -134,16 +122,6 @@ struct CameraHomeView: View {
                 .disabled(busy || burst.isRunning)
 
                 HStack {
-                    Button(action: shootReport) {
-                        Text("LAB")
-                            .font(.mono(13))
-                            .foregroundStyle(labBusy ? .black : Theme.text)
-                            .frame(width: 48, height: 48)
-                            .background(Circle().fill(labBusy ? Theme.text : .clear))
-                            .overlay(Circle().strokeBorder(Theme.text, lineWidth: 2))
-                    }
-                    .disabled(busy || labBusy || burst.isRunning)
-                    .padding(.leading, 34)
                     Spacer()
                     Button(action: shootBurst) {
                         Text("64")
@@ -155,7 +133,7 @@ struct CameraHomeView: View {
                             )
                             .overlay(Circle().strokeBorder(Theme.text, lineWidth: 2))
                     }
-                    .disabled(busy || labBusy || burst.isRunning)
+                    .disabled(busy || burst.isRunning)
                     .padding(.trailing, 34)
                 }
             }
@@ -172,7 +150,7 @@ struct CameraHomeView: View {
                 .font(.mono(12))
                 .foregroundStyle(pipelineError != nil ? .red : Theme.textDim)
                 .multilineTextAlignment(.center)
-            Text("Capture 4 RAW frames, or import a set,\nto fuse one HDR image + a Photoshop LUT.")
+            Text("Capture 4 RAW frames, or import a set,\nto build the 16×16-seeded GIF target.")
                 .font(.footnote)
                 .foregroundStyle(Theme.textDim)
                 .multilineTextAlignment(.center)
@@ -207,35 +185,6 @@ struct CameraHomeView: View {
 
     private func shootBurst() {
         Task { await burst.run(camera: camera) }
-    }
-
-    /// Capture ONE 4-DNG cycle, run the L2 chain on-device, and package the
-    /// 16-LAB report (bands, palette, index maps, rung PNGs, source DNGs)
-    /// for AirDrop — the ground-truth artifact for Mac-side analysis.
-    private func shootReport() {
-        labBusy = true
-        labNote = "capturing cycle…"
-        reportURLs = nil
-        Task {
-            do {
-                let dngs = try await camera.captureBracket()
-                let biases = camera.biases
-                labNote = "reducing → 16-LAB report…"
-                let result = await Task.detached(priority: .userInitiated) {
-                    CycleReport.build(dngs: dngs, biases: biases)
-                }.value
-                switch result {
-                case .success(let urls):
-                    reportURLs = urls
-                    labNote = "report ready — \(urls.count) files"
-                case .failure(let why):
-                    labNote = "report ✗ \(why)"
-                }
-            } catch {
-                labNote = "report ✗ \(error)"
-            }
-            labBusy = false
-        }
     }
 
     private func shoot() {

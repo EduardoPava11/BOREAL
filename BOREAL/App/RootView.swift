@@ -2,14 +2,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// Navigation root. Owns the single PipelineModel and the .fileImporter, and
-/// flips between the live-camera HOME and the post-capture REVIEW screen driven
+/// flips between the live-camera HOME and the post-capture GIF preview driven
 /// by `model.phase`:
 ///   .idle / .error  → CameraHomeView (live preview + histogram + shutter; Import
 ///                      always reachable, incl. when the camera can't start)
 ///   .processing      → processing overlay
-///   .done            → ReviewView (hero + grade + RGBT grid + Share/New)
+///   .done            → GifPreviewView (rung hero + palette grid + AirDrop)
 /// Capture IS the home: the shutter feeds model.process(datas:) directly (no
-/// fullScreenCover). Review's "New" resets → .idle → back to the camera.
+/// fullScreenCover). Preview's "New" resets → .idle → back to the camera.
 struct RootView: View {
     @State private var model = PipelineModel()
     @State private var importing = false
@@ -56,7 +56,7 @@ struct RootView: View {
                 }
             }
         case .done:
-            ReviewView(model: model, onNew: { model.reset() })
+            GifPreviewView(model: model, onNew: { model.reset() })
         }
     }
 }

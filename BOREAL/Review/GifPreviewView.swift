@@ -1,0 +1,103 @@
+import SwiftUI
+
+/// The GIF preview surface (BOREAL-GIF-ISP-WORKFLOW.md Phase 1): the user
+/// SEES exactly what the ISP targets — index map × palette, decoded by the
+/// same path that writes the report PNGs. Nearest-neighbor upscale only;
+/// smoothing would lie about the product.
+///
+///   hero      the selected rung, palette-mapped
+///   rung bar  16 / 32 / 64 / 128 / 256 — every prefix is a rung
+///   palette   the seed 16×16 shown AS a 16×16 grid (A2 made visible:
+///             grid position ≡ palette color)
+///   share     AirDrops the full report bundle (JSON + PNGs + DNGs)
+struct GifPreviewView: View {
+    let model: PipelineModel
+    let onNew: () -> Void
+
+    @State private var rung = 256
+
+    var body: some View {
+        ZStack {
+            Theme.bg.ignoresSafeArea()
+            if let report = model.report {
+                content(report)
+            } else {
+                Text("No report.").font(.mono(12)).foregroundStyle(Theme.textDim)
+            }
+        }
+    }
+
+    @ViewBuilder private func content(_ report: CycleReport.Report) -> some View {
+        VStack(spacing: 16) {
+            HStack {
+                Button(action: onNew) {
+                    Label("New", systemImage: "camera")
+                        .font(.mono(12)).foregroundStyle(Theme.text)
+                }
+                Spacer()
+                Text(model.status)
+                    .font(.mono(10)).foregroundStyle(Theme.textDim)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 18)
+
+            // Hero: the selected rung, decoded index×palette, hard pixels.
+            if let img = heroImage(report) {
+                Image(decorative: img, scale: 1)
+                    .resizable()
+                    .interpolation(.none)
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 18)
+            }
+
+            // Rung bar: every prefix is a rung.
+            HStack(spacing: 8) {
+                ForEach(report.indexMaps.keys.sorted(), id: \.self) { r in
+                    Button(action: { rung = r }) {
+                        Text("\(r)")
+                            .font(.mono(12))
+                            .foregroundStyle(rung == r ? .black : Theme.text)
+                            .padding(.vertical, 6).padding(.horizontal, 10)
+                            .background(Capsule().fill(rung == r ? Theme.text : .clear))
+                            .overlay(Capsule().strokeBorder(Theme.text, lineWidth: 1))
+                    }
+                }
+            }
+
+            // The seed 16×16 AS a 16×16 grid — the palette IS the image.
+            paletteGrid(report)
+                .padding(.horizontal, 60)
+
+            ShareLink(items: report.urls) {
+                Label("AirDrop report (\(report.urls.count) files)",
+                      systemImage: "square.and.arrow.up")
+                    .font(.mono(12))
+                    .padding(.vertical, 8).padding(.horizontal, 14)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(.top, 12)
+    }
+
+    private func heroImage(_ report: CycleReport.Report) -> CGImage? {
+        let r = report.indexMaps[rung] != nil ? rung : (report.indexMaps.keys.max() ?? 16)
+        guard let indices = report.indexMaps[r] else { return nil }
+        return CycleReport.cgImage(indices: indices, side: r, paletteRGB: report.paletteRGB)
+    }
+
+    private func paletteGrid(_ report: CycleReport.Report) -> some View {
+        let cols = Array(repeating: GridItem(.flexible(), spacing: 1), count: 16)
+        return LazyVGrid(columns: cols, spacing: 1) {
+            ForEach(0..<256, id: \.self) { i in
+                let p = i * 3
+                Rectangle()
+                    .fill(Color(red: Double(report.paletteRGB[p]) / 255,
+                                green: Double(report.paletteRGB[p + 1]) / 255,
+                                blue: Double(report.paletteRGB[p + 2]) / 255))
+                    .aspectRatio(1, contentMode: .fit)
+            }
+        }
+    }
+}
