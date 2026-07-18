@@ -32,7 +32,7 @@ emit:
 swift-verify:
 	@mkdir -p _build
 	swiftc -O ../BOREAL/Kernels/*.swift verify-swift/main.swift -o _build/verify-swift
-	_build/verify-swift ../zig/borealkernel/fixtures
+	_build/verify-swift ../fixtures
 
 # The full gate: laws → fixtures → Python oracle → Swift kernels.
 gate: test emit

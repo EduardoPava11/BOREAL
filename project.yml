@@ -23,9 +23,8 @@ targets:
     type: application
     platform: iOS
     sources:
-      # Active app, laid out by function (form follows function). The dead
-      # 64-frame-GIF tree was removed; BorealKernel.h and the bridging header
-      # are headers (found via HEADER_SEARCH_PATHS), not sources.
+      # Active app, laid out by function (form follows function). The kernel
+      # core is pure Swift under BOREAL/Kernels (enum BorealKernels).
       - path: BOREAL/App
       - path: BOREAL/Capture
       - path: BOREAL/Kernels

@@ -29,7 +29,7 @@ func bytes(_ v: Any?) -> [UInt8] {
 }
 
 let dir = CommandLine.arguments.count > 1
-    ? CommandLine.arguments[1] : "../zig/borealkernel/fixtures"
+    ? CommandLine.arguments[1] : "../fixtures"
 
 // ── colorpath: owned cbrt + composed matrix + full path, BIT-EXACT ─────────
 let cp = loadJSON("\(dir)/colorpath_golden.json")

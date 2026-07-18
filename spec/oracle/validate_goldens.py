@@ -12,8 +12,7 @@ import os
 import struct
 import sys
 
-FIXTURES = os.path.join(os.path.dirname(__file__), '..', '..',
-                        'zig', 'borealkernel', 'fixtures')
+FIXTURES = os.path.join(os.path.dirname(__file__), '..', '..', 'fixtures')
 
 M = 1 << 64
 
