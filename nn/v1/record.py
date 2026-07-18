@@ -66,8 +66,8 @@ def synth_record(rng, side=512, photons_at_1=4000.0):
     palette. L plane first-class.
     """
     scene = S.make_scene(rng, side)
-    clean = S.mosaic_of(scene)
-    evs = np.array([1.0, 2.0, 4.0, 8.0])
+    clean = S.expose_for_bracket(rng, S.mosaic_of(scene))
+    evs = S.DEVICE_EVS                                      # measured ratios
 
     pal_q16 = P.q16(P.oklab_from_prophoto(P.cfa_rung(clean, 16))).reshape(-1, 3)
 
@@ -75,7 +75,7 @@ def synth_record(rng, side=512, photons_at_1=4000.0):
     for e in evs:
         exposed = clean * e
         shot = rng.poisson(np.maximum(exposed, 0) * photons_at_1) / photons_at_1
-        mosaic = shot / e                                   # EV-normalize (1/e_t)
+        mosaic = S.sensor_read(rng, shot) / e               # ADC + EV-normalize (1/e_t)
         seed_q16 = P.q16(P.oklab_from_prophoto(P.cfa_rung(mosaic, 16)))
         ceil_q16 = P.q16(P.oklab_from_prophoto(P.cfa_rung(mosaic, 256)))
         idx = P.index_map(ceil_q16.reshape(-1, 3), pal_q16).reshape(256, 256)

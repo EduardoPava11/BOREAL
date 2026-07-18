@@ -104,6 +104,38 @@ in 3), AOT-compiled, run on one ComputeStream.
 - GATES: strict dominance over classic on the full-dE, band, and
   homeShare, 95% of scenes, synth AND real.
 
+## The on-device boundary (Core AI cannot train — and needn't)
+
+Core AI has NO training API (research-verified; MLX is Apple's
+training story). The architecture absorbs this because only ONE of
+its three verbs needs gradients: evolution proposes, the JEPA
+PREDICTS (gradients, Mac), the laws judge. Three tiers:
+
+  tier 1  PER CAPTURE, ON DEVICE — the battle. Defections, walk
+          swaps, churn: discrete moves, fitness = the hard law'd
+          metrics, BA4 gives Delta-chi^2 in O(1). No weights, no
+          autograd — pure Swift/Metal kernels. Untouched by the
+          limitation.
+  tier 2  PER USER, ON DEVICE — adapt AROUND the frozen model,
+          never inside it. (a) Archive SELECTION: the .aimodel
+          carries a small variant archive (multi-function assets);
+          the phone selects per scene, judged by the laws —
+          selection is inference + bookkeeping. (b) The theta-up
+          pattern (house-proven): a tiny owned adapter (~tens of
+          params, per-user scale/bias on the latents) trained with
+          HAND-WRITTEN gradients in our own kernels, applied in
+          Q16 space around the frozen trunk. Core AI never knows.
+  tier 3  GLOBAL, ON THE MAC — MLX gradient training on the N0
+          fractal-record corpus (the federated ROTAS/SATOR72
+          topology: phone captures bundles -> Mac trains ->
+          re-export -> phone). The .aimodel refresh ships as DATA
+          (asset load, AIModelCache), not as an app release.
+
+  Boundary rule: the archive's SELECTION runs on device; its
+  MUTATION (weight perturbation + retraining) runs on the Mac.
+  Per-user weight adaptation beyond selection = owned adapter in
+  our kernels, NEVER inside the .aimodel.
+
 ## N4 — Ship: Core AI
 
 - Export: MLX weights → safetensors → PyTorch mirror → torch.export
@@ -123,6 +155,10 @@ in 3), AOT-compiled, run on one ComputeStream.
   the environment, and every device capture adds selective
   pressure. This is the loop Daniel has run before — now with the
   JEPA predictor telling it where the landscape is interesting.
+- Split per the boundary rule above: device = selection among the
+  shipped archive (tier 2a); Mac = mutation + retraining (tier 3);
+  captures flow back as fractal records and become the next
+  generation's environment.
 
 ## Standing rules
 

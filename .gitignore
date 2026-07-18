@@ -21,3 +21,4 @@ __.SYMDEF
 .zig-cache/
 zig-out/
 spec/_build/
+__pycache__/
