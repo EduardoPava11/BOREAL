@@ -30,6 +30,7 @@ import Boreal.ColorPath
 import Boreal.Exposure
 import Boreal.Geometry
 import Boreal.GifTarget
+import Boreal.MultiScale
 import Boreal.Palette
 import Boreal.Pyramid
 
@@ -296,6 +297,33 @@ srgbTableZig = unlines
         chunk _ [] = []
         chunk n xs = take n xs : chunk n (drop n xs)
 
+-- ── Multi-scale fixture (Phase 3: demosaic at every scale) ─────
+
+multiscaleJson :: String
+multiscaleJson = jObj
+  [ ("conventions", jObj
+      [ ("rung",     jStr "rung r = its OWN demosaic: per-CFA-channel exact mean over (side/r)^2 cells (RGGB: even,even=R; odd,odd=B; else G), then camera->ProPhoto matrix, then ProPhoto->OKLab->Q16 (colorpath conventions)")
+      , ("stack",    jStr "residual stack per channel: rung16 ++ (rung2s - upsample2(rungS)) coarse->fine; upsample2 = exact 2x2 nearest replication (each row: values doubled, row emitted twice)")
+      , ("layout",   jStr "prefix through rung r = sum of r'^2 for r' <= r; decode(prefix r) == THE rung-r demosaic (MS3)")
+      , ("mosaic",   jStr "normalized [0,1) dyadic /16384 (exact in f32/f64); LCG s'=s*6364136223846793005+1442695040888963407 wrap; numerator = abs(floorDiv(s,65536)) mod 16384")
+      ])
+  , ("fixture", jObj
+      [ ("seed",   show (7 :: Int))
+      , ("side",   show msSide)
+      , ("rungs",  jInts (rungsFor msSide))
+      , ("matrix", jStr "identity (has_color = false path)")
+      , ("mosaicF64", jDbls (map fromRational (concat msMosaic)))
+      , ("bandsL", jInts (msBands (\(l, _, _) -> l)))
+      , ("bandsA", jInts (msBands (\(_, a, _) -> a)))
+      , ("bandsB", jInts (msBands (\(_, _, b) -> b))) ])
+  ]
+  where
+    msSide = 128
+    msMosaic = mkMosaicUnit 7 msSide
+    msIdent = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] :: M3
+    msStack = rungStack msIdent msSide msMosaic
+    msBands pick = encodeMS [ (r, pick planes) | (r, planes) <- msStack ]
+
 -- ── Geometry fixture ───────────────────────────────────────────
 
 geometryJson :: String
@@ -324,6 +352,7 @@ main = do
   emit "exposure_golden.json"  exposureJson
   emit "colorpath_golden.json" colorpathJson
   emit "giftarget_golden.json" giftargetJson
+  emit "multiscale_golden.json" multiscaleJson
   writeFile "../zig/borealkernel/src/srgb_table.zig" srgbTableZig
   putStrLn "  wrote ../zig/borealkernel/src/srgb_table.zig (generated)"
   putStrLn "GOLDENS EMITTED"

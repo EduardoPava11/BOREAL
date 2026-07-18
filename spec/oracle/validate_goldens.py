@@ -74,6 +74,39 @@ def pyramid(img, base=16):
     return cur, levels
 
 
+CBRT2 = 1.2599210498948731647672106072782
+CBRT4 = 1.5874010519681994747517056392723
+
+
+def owned_cbrt(x):
+    if x == 0:
+        return 0.0
+    if x < 0:
+        return -owned_cbrt(-x)
+    m, E = math.frexp(x)         # x = m * 2^E, m in [0.5, 1)
+    f = 2.0 * m                  # f in [1, 2), exact
+    e = E - 1
+    y = 0.75 + f / 4.0
+    for _ in range(4):
+        y = (2.0 * y + f / (y * y)) / 3.0
+    corr = (1.0, CBRT2, CBRT4)[e % 3]
+    return math.ldexp(y * corr, e // 3)
+
+
+def apply3(m, v):
+    return tuple(m[3 * i] * v[0] + m[3 * i + 1] * v[1] + m[3 * i + 2] * v[2]
+                 for i in range(3))
+
+
+def mul3(a, b):
+    return [a[3 * i] * b[j] + a[3 * i + 1] * b[3 + j] + a[3 * i + 2] * b[6 + j]
+            for i in range(3) for j in range(3)]
+
+
+def q16(x):
+    return math.floor(x * 65536 + 0.5)
+
+
 def fnv(ints):
     h = 14695981039346656037
     for v in ints:
@@ -155,34 +188,6 @@ def main():
             assert sum(bs) / len(bs) == cb['cellsB'][idx]
 
     # ── colorpath: owned cbrt + matrices + Q16, BIT-EXACT ────────────────
-    CBRT2 = 1.2599210498948731647672106072782
-    CBRT4 = 1.5874010519681994747517056392723
-
-    def owned_cbrt(x):
-        if x == 0:
-            return 0.0
-        if x < 0:
-            return -owned_cbrt(-x)
-        m, E = math.frexp(x)         # x = m * 2^E, m in [0.5, 1)
-        f = 2.0 * m                  # f in [1, 2), exact
-        e = E - 1
-        y = 0.75 + f / 4.0
-        for _ in range(4):
-            y = (2.0 * y + f / (y * y)) / 3.0
-        corr = (1.0, CBRT2, CBRT4)[e % 3]
-        return math.ldexp(y * corr, e // 3)
-
-    def apply3(m, v):
-        return tuple(m[3 * i] * v[0] + m[3 * i + 1] * v[1] + m[3 * i + 2] * v[2]
-                     for i in range(3))
-
-    def mul3(a, b):
-        return [a[3 * i] * b[j] + a[3 * i + 1] * b[3 + j] + a[3 * i + 2] * b[6 + j]
-                for i in range(3) for j in range(3)]
-
-    def q16(x):
-        return math.floor(x * 65536 + 0.5)
-
     cp = json.load(open('colorpath_golden.json'))
     mats = cp['matrices']
     composed = mul3(mats['xyzD65toLms'],
@@ -262,6 +267,60 @@ def main():
     want = gt['palette']['rgb8']
     got = [v for q in pal for v in srgb8_from_q16(q)]
     assert got == want, 'palette rgb8 drift'
+
+    # ── multiscale: per-rung demosaic + residual stack, BIT-EXACT ────────
+    ms = json.load(open('multiscale_golden.json'))['fixture']
+    side, rungs = ms['side'], ms['rungs']
+    mos = [ms['mosaicF64'][i * side:(i + 1) * side] for i in range(side)]
+
+    def cfa_rung(r):
+        k = side // r
+        out = []
+        for cy in range(r):
+            for cx in range(r):
+                rs, gs, bs = [], [], []
+                for y in range(cy * k, (cy + 1) * k):
+                    for x in range(cx * k, (cx + 1) * k):
+                        v = mos[y][x]
+                        if y % 2 == 0 and x % 2 == 0:
+                            rs.append(v)
+                        elif y % 2 == 1 and x % 2 == 1:
+                            bs.append(v)
+                        else:
+                            gs.append(v)
+                out.append((sum(rs) / len(rs), sum(gs) / len(gs),
+                            sum(bs) / len(bs)))
+        return out
+
+    def oklab_q16(rgb):
+        lms = apply3(mats['prophotoToLms'], rgb)
+        lab = apply3(mats['lmsToLab'], tuple(owned_cbrt(v) for v in lms))
+        return [q16(v) for v in lab]
+
+    planes = {}
+    for r in rungs:
+        qs = [oklab_q16(c) for c in cfa_rung(r)]
+        planes[r] = ([t[0] for t in qs], [t[1] for t in qs], [t[2] for t in qs])
+
+    def upsample(r, img):
+        out = []
+        for y in range(r):
+            row = [v for v in img[y * r:(y + 1) * r] for _ in (0, 1)]
+            out += row
+            out += row
+        return out
+
+    for ch, key in ((0, 'bandsL'), (1, 'bandsA'), (2, 'bandsB')):
+        bands, prev, r_prev = [], None, None
+        for r in rungs:
+            img = planes[r][ch]
+            if prev is None:
+                bands += img
+            else:
+                up = upsample(r_prev, prev)
+                bands += [a - b for a, b in zip(img, up)]
+            prev, r_prev = img, r
+        assert bands == ms[key], f'multiscale {key} drift'
 
     print('ORACLE GREEN: all fixtures match independent re-computation')
 
