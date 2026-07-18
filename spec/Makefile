@@ -19,8 +19,9 @@ GIFWIRE   = gifwire/GifWireLaws.hs
 CYCLESET  = cycleset/CycleSetLaws.hs
 BINOMIAL  = binomial/BinomialLaws.hs
 HIERARCHY = hierarchy/HierarchyLaws.hs
+THEOREM   = theorem/MaxSignalLaws.hs
 
-CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY)
+CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM)
 
 # ── Targets ──────────────────────────────────────────────
 
