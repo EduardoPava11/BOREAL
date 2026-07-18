@@ -5,8 +5,7 @@ struct BorealApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        // Linkage canary: a missing -lborealkernel fails here, at launch.
-        Kernel.keepalive()
+        // Kernel core is pure Swift (BorealKernels) — nothing to link-check.
     }
 
     var body: some Scene {

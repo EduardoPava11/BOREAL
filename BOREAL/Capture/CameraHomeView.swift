@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The live-camera HOME screen — the app's root surface and first thing seen on
 /// launch. Pure-black instrument styling: full-bleed preview, a tracked wordmark,
-/// a translucent RGB-histogram read-out (computed live by the Zig kernel), and a
+/// a translucent RGB-histogram read-out (computed live by the kernel core), and a
 /// single round shutter that fires the 4-frame RAW bracket.
 ///
 /// Three states avoid any launch "glimpse":
@@ -82,7 +82,7 @@ struct CameraHomeView: View {
 
             Spacer()
 
-            // Live Zig exposure read-out (bk_rgb_histograms on the video feed).
+            // Live exposure read-out (BorealKernels.rgbHistograms on the video feed).
             if let h = camera.liveHist {
                 VStack(spacing: 6) {
                     HStack {

@@ -97,4 +97,25 @@ guard let gif = BorealKernels.gifEncode(frames: gframes, side: gside,
 else { die("gifEncode returned nil") }
 if [UInt8](gif) != bytes(gw["gifBytes"]) { die("gif bytes drift") }
 
-print("SWIFT KERNELS GREEN: bit/byte-exact against all goldens")
+// ── ported-kernel checks (fuse / scene / DNG — M3/M4 migration) ────────────
+let ev = loadJSON("\(dir)/exposure_golden.json")
+for c in ev["cases"] as! [[String: Any]] {
+    let frames = c["frames"] as! [[String: Any]]
+    func rat(_ v: Any?) -> Float {
+        let p = (v as! [Any]).map { ($0 as! NSNumber).doubleValue }
+        return Float(p[0] / p[1])
+    }
+    let et = frames.map { rat($0["t"]) }
+    let iso = frames.map { rat($0["iso"]) }
+    let fn = frames.map { rat($0["fnum"]) }
+    let got = BorealKernels.relativeExposures(et: et, iso: iso, fnum: fn)
+    let want = doubles(c["expectedF64"])
+    for (g, w) in zip(got, want) where abs(Double(g) - w) > max(1e-4, 1e-5 * w) {
+        die("relativeExposures drift in case \(c["name"] ?? "?"): \(got) vs \(want)")
+    }
+}
+if !BorealKernels.fuseSelfTest() { die("fuse self-test failed") }
+if !BorealKernels.sceneSelfTest() { die("scene self-test failed") }
+if !BorealKernels.dngSelfTest() { die("DNG self-test failed") }
+
+print("SWIFT KERNELS GREEN: bit/byte-exact against all goldens + ported self-tests")

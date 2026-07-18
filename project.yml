@@ -58,37 +58,6 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
         MTL_FAST_MATH: YES
-        # Zig kernel integration. The pre-build phase below produces
-        # libborealkernel.a per (platform, arch) under
-        #   zig/borealkernel/zig-out/<triple>/lib/
-        # The bridging header exposes BorealKernel.h to Swift.
-        SWIFT_OBJC_BRIDGING_HEADER: BOREAL/BOREAL-Bridging-Header.h
-        HEADER_SEARCH_PATHS:
-          - $(SRCROOT)/BOREAL
-        # Per-SDK library search paths so the simulator build doesn't
-        # accidentally pick up the device's aarch64-ios .a (which would
-        # surface as a misleading "not 8-byte aligned" linker error).
-        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]":
-          - $(SRCROOT)/zig/borealkernel/zig-out/aarch64-ios/lib
-        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]":
-          - $(SRCROOT)/zig/borealkernel/zig-out/aarch64-ios-simulator/lib
-        OTHER_LDFLAGS:
-          - -lborealkernel
-    preBuildScripts:
-      - name: "Build Zig kernel (libborealkernel.a)"
-        script: |
-          "${SRCROOT}/scripts/build-zig.sh"
-        # Declared inputs: every .zig source that affects the .a output.
-        # The xcfilelist is human-maintained; Xcode uses it to decide
-        # whether the pre-build phase needs to re-run.
-        inputFiles:
-          - $(SRCROOT)/zig/borealkernel/build.zig
-          - $(SRCROOT)/zig/borealkernel/build.zig.zon
-        inputFileLists:
-          - $(SRCROOT)/scripts/zig-source-inputs.xcfilelist
-        outputFiles:
-          - "$(SRCROOT)/zig/borealkernel/zig-out/$(EFFECTIVE_PLATFORM_NAME:c=)/lib/libborealkernel.a"
-        # With proper input declarations Xcode can skip this phase when
-        # nothing changed. Zig's own caching is still the second line of
-        # defense if the input list is stale.
-        basedOnDependencyAnalysis: true
+        # The kernel core is pure Swift (BOREAL/Kernels/, enum BorealKernels)
+        # — Phase 5 migration complete; the Zig tree and its link/pre-build
+        # wiring are gone.

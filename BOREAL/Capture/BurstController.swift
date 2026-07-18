@@ -6,7 +6,7 @@ import Foundation
 /// (`CameraController.captureBracket`); this controller grafts 6teen3's burst
 /// mechanics AROUND it, adapted to cycle granularity:
 ///   • fire-next-before-processing — cycle k+1's bracket captures while cycle
-///     k reduces on a background chain (overlaps ISP with the Zig kernels)
+///     k reduces on a background chain (overlaps ISP with the kernels)
 ///   • bounded in-flight — at most 2 cycles of DNG data alive (~250 MB) so the
 ///     burst never approaches the 64-full-frames (~1.6 GB) cliff
 ///   • cycle-granular failure — a failed bracket drops that CYCLE (fuse is
@@ -16,7 +16,7 @@ import Foundation
 /// Slice-1 reduction is decode + EV-aware fuse + free (proves the seam and the
 /// memory discipline); the full L2 chain (demosaic → ProPhoto → 256² box →
 /// OKLab Q16 → pyramid) plugs into `reduce(_:)` next. The inter-cycle ETTR
-/// planner (scene.zig) plugs into `planBiases(after:)`.
+/// planner plugs into `planBiases(after:)`.
 ///
 /// Capture is DEVICE-ONLY (compile-check on the simulator, per house rule).
 @MainActor
@@ -277,7 +277,7 @@ final class BurstController {
         let actualEV = Kernel.relativeExposures(cropped)
 
         // 3-4. Fuse (EV-aware) → the custom ISP: demosaic at EVERY scale.
-        // The fused mosaic is scene-linear normalized; bk_ms_encode produces
+        // The fused mosaic is scene-linear normalized; msEncode produces
         // the per-channel residual stacks directly (rung r = its own
         // demosaic → camera→ProPhoto → OKLab Q16; MS laws).
         guard let fused = Kernel.fuse(cropped) else { return fail("fuse failed") }
