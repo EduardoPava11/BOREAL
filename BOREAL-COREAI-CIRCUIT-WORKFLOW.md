@@ -176,19 +176,46 @@ discipline that five controlled runs (2026-07-18) proved necessary.
 
 ---
 
-## Order of execution
+## Order of execution — THE PLAN (approved by Daniel 2026-07-19)
 
-  1. (Daniel) ONE device re-capture -> first real fractal bundle
-     (unblocks A1's exit gate, B3's real leg, B4's device judge).
-  2. d=48/RES_GAIN-0.3 10k verdict (run PAUSED ~step 4500; resume
-     from nn/v1/runs/v1h_d48_10k.ckpt.safetensors) -> B2 ladder
-     decision.
-  3. C0 logbook telemetry (capture->encode trace in bundles) — the
-     circuit's flight recorder.
-  4. A2 submit path behind the Xcode 27 beta (SDK questions). Gap
-     G2's fix (the burst routes into the ONE preview surface) stands
-     on its own — the user sees the burst GIF; no comparison UI.
-  5. B5 archive once TWO variants beat noisy-classic on the gate.
+Supersedes the list below-dated items; each phase pays on its own.
+Full rationale: BOREAL-SIGNAL-LADDER-WORKFLOW.md Part C + the
+2026-07-19 session verdicts (d=96 champion beats the oracle at the
+equilibrium layer; synth is mined out; the walk is worth 14x for
+classic with zero ML).
+
+  P1  THE WALK into the product path (spec-first: walk-loop law ->
+      golden -> oracle -> Swift kernel -> per-frame path). Classic
+      captures gain ~14x chi^2 today; precondition for the model's
+      gate-layer advantage to exist on device. D12 decided inside
+      (blue-in-time as DW-law extension — three independent
+      derivations say yes).
+      EXIT: walk laws green in the five-leg gate; device report.json
+      carries settled chi^2 in the band; preview shows the settled GIF.
+  P2  REAL PHOTONS: (Daniel) the ONE device re-capture; then G6
+      (burst emits bundles) + ingest wiring into the trainer (R5
+      anneal begins). D8 decides transport when volume demands.
+      EXIT: a bundle captured one day trains the next day's run,
+      judged vs its own device-recorded baselines.
+  P3  V1 SHIP TIER: plain Swift/Accelerate forward of d=96 consuming
+      the V1HW package; async (quality over cadence), silent (no
+      A/B); parity = JUDGED metrics.
+      EXIT: composed GIF on device; kill-switch verified; Mac<->device
+      judged-metric parity.
+  P4  TRAINING ON REAL DATA: R5 80:20->20:80; A1's fair test (real
+      motion); d144 capacity verdict; N2 chroma pair opens (ledger:
+      chroma dither free at phone distance). D11 fuse-weight audit
+      folded in as an EV-law addendum.
+      EXIT: R4-style dominance on held-out REAL bundles.
+  P5  TIERS + REMAINDERS on measured need: V2 Metal (model +
+      msEncode), V3 Core AI (Xcode 27), gaps G4/G5/G3-as-D1 (the
+      SCC global-table + reuse-flag palette design subsumes GCT/LCT),
+      G1 (likely obsolete — sigma feeds the sampler, not the eye).
+      B5 archive once TWO variants beat noisy-classic on the gate.
+
+  Method standing: one axis per run; replicate anything within
+  0.0004 dE of the champion; mechanistic post-mortems; C0 logbook
+  telemetry lands opportunistically with P2's bundle work.
 
 ## Decision points (Daniel)
 
