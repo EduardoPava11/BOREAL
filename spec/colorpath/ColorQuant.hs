@@ -1,7 +1,8 @@
 -- ════════════════════════════════════════════════════════════════
 -- ColorQuant: DNG → LAB — laws for the ProPhoto→OKLab→Q16 link
 --
--- The device-proven Zig path ends at linear ProPhoto RGB.  These
+-- The device-proven decode path (Swift since M5) ends at linear
+-- ProPhoto RGB.  These
 -- laws pin the rest of the road into the pyramid's i32 domain:
 --
 --   CQ1 owned cbrt ≈ libm (1e-12) and inverts cubes

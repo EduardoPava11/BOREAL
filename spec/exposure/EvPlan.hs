@@ -2,8 +2,9 @@
 -- EvPlan: laws tying the ETTR planner to the capture loop
 -- (GIF-ISP Phase 2).
 --
--- The scene analysis + plan solve (scene.zig solveClips /
--- planExposures) are device-proven Zig and stay outside this spec;
+-- The scene analysis + plan solve (SceneKernel.swift solveClips /
+-- planExposures — ported from scene.zig, tree deleted M5) are
+-- device-proven and stay outside this spec;
 -- what the spec pins is the MAPPING the capture loop applies to a
 -- plan — because that mapping is new code and it is where a bad
 -- value would reach the hardware:
@@ -40,7 +41,7 @@ seed :: [Double]
 seed = [-2, 0, 2, 4]
 
 -- Lawful sample plans: (green, red, blue, shadow) with shadow =
--- green + depth, depth ∈ [1, 4] (scene.zig SHADOW_ADD_MIN/MAX).
+-- green + depth, depth ∈ [1, 4] (SceneKernel shadowAddMin/Max).
 plans :: [(Double, Double, Double, Double)]
 plans =
   [ (0.5, 1.2, 0.8, 1.5)

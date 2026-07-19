@@ -11,6 +11,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 import pipeline as P  # noqa: E402
+import record as R    # noqa: E402  (the canonical numpy patch-major)
 
 FIX = os.path.join(os.path.dirname(__file__), '..', '..', 'fixtures')
 
@@ -80,16 +81,42 @@ for f in bn['fixtures']:
         if chi2 != f['chi2F64']:
             die(f"chi2-from-counts {f['name']}")
 
+# battle: patch-major ordering at the emitted spots + the homeShare linking
+bt = load('battle_golden.json')
+pm = R.patch_major(np.arange(65536).reshape(256, 256))
+for s in bt['patchMajorSpots']:
+    y, x = 16 * s['v'] + s['j'], 16 * s['u'] + s['i']
+    if pm[s['pos']] != y * 256 + x:
+        die(f"patch-major spot ({s['v']},{s['u']},{s['j']},{s['i']})")
+hs = bt['homeShare']
+mask = (1 << 64) - 1
+s64 = hs['seed']
+idx = np.empty(hs['n'], dtype=np.uint8)
+for k in range(hs['n']):
+    idx[k] = (s64 >> 16) & 0xFF   # == (s div 65536) mod 256, s positive
+    s64 = (s64 * 6364136223846793005 + 1442695040888963407) & mask
+if P.home_share(idx) != hs['expected']:
+    die('homeShare linking')
+
 # hierarchy: pureH anchors (H laws, re-derived)
 pure = np.repeat(np.repeat(np.arange(256).reshape(16, 16), 16, 0), 16, 1).ravel()
 assert P.home_share(pure) == 1.0
 assert P.chi_square(pure) == 0.0
 assert P.home_share(np.zeros(65536, dtype=int)) == 1.0 / 256
 
-# bell: projection is lawful by construction
+# bell: allocation + targets pinned to the emitted fixture (no retyped
+# literal), and the projection is lawful by construction
+pal_fx = load('palette_golden.json')
+if list(P.BELL) != pal_fx['bellCounts']:
+    die('BELL != fixture bellCounts')
+t = P.bell_quantile_targets()
+tf = np.array(pal_fx['bellTargets'], dtype=np.float64)
+if float(np.abs(t - tf).max()) > 1e-12:
+    die('bell_quantile_targets != fixture bellTargets')
+if float(np.abs(P.BELL_TARGETS - tf).max()) != 0.0:
+    die('BELL_TARGETS != fixture bellTargets')
 rng = np.random.default_rng(7)
 proj = P.bell_project_L(rng.random(256))
-t = P.bell_quantile_targets()
 assert proj.min() == 0.0 and proj.max() == 1.0
 assert sorted(proj) == list(t)
 

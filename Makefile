@@ -9,7 +9,8 @@
 # Quick reference:
 #   make setup         — verify prereqs + regenerate BOREAL.xcodeproj
 #   make build         — Debug build for the simulator (no signing)
-#   make test          — the spec gate (laws, goldens, oracle, Swift kernels)
+#   make test          — the spec gate (laws, goldens, oracle, Swift
+#                        kernels, trainer parity G-a)
 #   make test-xcode    — xcodebuild test (NOTE: no test target exists
 #                        yet — gap G5 in BOREAL-GIF-ISP-WORKFLOW.md)
 #   make device        — Release build for generic iOS device
@@ -34,7 +35,7 @@ help:
 	@echo "BOREAL build targets:"
 	@echo "  make setup      verify prereqs and regenerate $(PROJECT)"
 	@echo "  make build      Debug simulator build (no signing)"
-	@echo "  make test       spec gate (laws/goldens/oracle/Swift) + xcodebuild test"
+	@echo "  make test       spec gate (laws/goldens/oracle/Swift/trainer G-a) + xcodebuild test"
 	@echo "  make test-xcode xcodebuild test (no test target yet — gap G5)"
 	@echo "  make device     Release device build"
 	@echo "  make sim        alias for 'make build'"

@@ -27,7 +27,7 @@ CORE = $(GEOMETRY) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE
 
 # ── Targets ──────────────────────────────────────────────
 
-.PHONY: test test-verbose test-one emit gate list
+.PHONY: test test-verbose test-one emit gate ga list
 
 # Regenerate the golden fixtures (single-source from Boreal/*).
 emit:
@@ -40,10 +40,18 @@ swift-verify:
 	swiftc -O ../BOREAL/Kernels/*.swift verify-swift/main.swift -o _build/verify-swift
 	_build/verify-swift ../fixtures
 
-# The full gate: laws → fixtures → Python oracle → Swift kernels.
+# Trainer parity (gate G-a): the NumPy training pipeline (nn/v1) is
+# bit-exact against the same goldens the Swift kernels answer to.
+# goldens_test resolves fixtures relative to its own file — cwd-safe.
+ga:
+	python3 ../nn/v1/goldens_test.py
+
+# The full gate: laws → fixtures → Python oracle → Swift kernels →
+# trainer parity (G-a).
 gate: test emit
 	python3 oracle/validate_goldens.py
 	$(MAKE) swift-verify
+	$(MAKE) ga
 
 test:
 	@echo "════ BOREAL Spec Suite ════"

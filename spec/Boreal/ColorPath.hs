@@ -1,7 +1,8 @@
 -- ════════════════════════════════════════════════════════════════
 -- Boreal.ColorPath — DNG → LAB: the missing link, specified.
 --
--- The device-proven Zig path already reaches LINEAR PROPHOTO RGB
+-- The device-proven decode path (now Swift — the Zig origin is
+-- deleted, M5) already reaches LINEAR PROPHOTO RGB
 -- (decode → fuse → demosaic → cam_to_pp).  This module pins the
 -- rest: ProPhoto(D50) → XYZ → Bradford → XYZ(D65) → LMS → OKLab,
 -- then Q16 quantization into the pyramid's i32 domain.

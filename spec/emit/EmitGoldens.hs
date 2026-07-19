@@ -21,11 +21,12 @@
 
 module Main where
 
-import Data.List (intercalate)
+import Data.List (elemIndex, intercalate)
 import Data.Ratio (denominator, numerator)
 import System.Directory (createDirectoryIfMissing)
 
 import Boreal.Battle
+import Boreal.PatchGrid
 import Boreal.Binomial
 import Boreal.ColorPath
 import Boreal.CycleSet
@@ -71,6 +72,9 @@ paletteJson = jObj
   , ("L", jDbls [ labL (palette p) | p <- cellsAll ])
   , ("a", jDbls [ labA (palette p) | p <- cellsAll ])
   , ("b", jDbls [ labB (palette p) | p <- cellsAll ])
+  , ("bellNote", jStr "bellCounts = the B-law luminance allocation over 16 strata (sums to 256); bellTargets = bellPalette's 256 luminances in rank order — stratum k owns [k/16,(k+1)/16), L = (k + (pos+0.5)/cnt)/16, ends pinned to EXACT 0 and 1; these are the trainer's quantile targets (nn/v1 bell_quantile_targets), never retyped")
+  , ("bellCounts",  jInts bellCounts)
+  , ("bellTargets", jDbls [ labL (bellPalette i) | i <- [0 .. 255] ])
   , ("oklabReference", jArr
       [ jObj [ ("linearSRGB", jDbls [r, g, b])
              , ("oklab", let Lab l a bb = oklabFromLinearSRGB r g b
@@ -360,6 +364,7 @@ battleJson = jObj
   [ ("conventions", jObj
       [ ("delta", jStr "frameDelta a b = [(pos, new)] at positions where a and b differ, ascending; applyDelta a (frameDelta a b) == b EXACTLY (BA5); churn = list length")
       , ("patchMajor", jStr "the fractal record's ordering: patch (v,u) outer row-major, inner (j,i) row-major - H2/PatchGrid; pos = (v*16+u)*256 + (j*16+i) on the 256x256 ceiling")
+      , ("homeShare", jStr "homeShare = (1/256) * sum over patches p of the share of patch p's pixels equal to p on the (16x16)x(16x16) ceiling (H laws) = own/65536 — power-of-two denominator, so the expected f64 is EXACT; the index frame is regenerated counts-free from the baLcg convention: idx_k = (s_k div 65536) mod 256 row-major, s_{k+1} = s_k*6364136223846793005 + 1442695040888963407, s_0 = seed, Haskell Integer (never wraps); the extracted byte is bits 16..23 of a positive s, which depend only on the low 64 bits — wrapping-u64 regeneration is exactly equivalent")
       ])
   , ("fixture", jObj
       [ ("a",        jInts frA)
@@ -367,6 +372,12 @@ battleJson = jObj
       , ("deltaPos", jInts (map fst dl))
       , ("deltaNew", jInts (map snd dl))
       , ("churn",    show (churn frA frB))
+      ])
+  , ("patchMajorSpots", jArr (map spotJson pmSpots))
+  , ("homeShare", jObj
+      [ ("seed",     show hsSeed)
+      , ("n",        show (side256 * side256))
+      , ("expected", show (fromRational (homeShare hsFrame) :: Double))
       ])
   ]
   where
@@ -378,6 +389,25 @@ battleJson = jObj
       | s <- take n (iterate (\x -> x * 6364136223846793005
                                       + 1442695040888963407)
                              (fromIntegral (seed :: Int) :: Integer)) ]
+    -- Spot positions COMPUTED from PatchGrid's own ordering (never
+    -- retyped): pos = where `patches` places ceiling index
+    -- unfactorIdx((v,u),(j,i)) in its concatenated output.
+    pmIdentity = concat (patches [0 .. side256 * side256 - 1])
+    spotJson (v, u, j, i) =
+      let src = unfactorIdx ((v, u), (j, i))
+          pos = maybe (error "patchMajor spot not in the ordering") id
+                      (elemIndex src pmIdentity)
+      in jObj [ ("v", show v), ("u", show u)
+              , ("j", show j), ("i", show i)
+              , ("pos", show pos) ]
+    pmSpots :: [(Int, Int, Int, Int)]
+    pmSpots =
+      [ (0, 0, 0, 0), (0, 0, 0, 1), (0, 0, 1, 0), (0, 1, 0, 0)
+      , (1, 0, 0, 0), (3, 5, 7, 9), (9, 7, 5, 3), (7, 7, 7, 7)
+      , (0, 15, 0, 15), (15, 0, 15, 0), (0, 15, 15, 0), (15, 0, 0, 15)
+      , (1, 2, 3, 4), (12, 10, 8, 6), (5, 11, 2, 14), (15, 15, 15, 15) ]
+    hsSeed  = 13 :: Int
+    hsFrame = baLcg hsSeed (side256 * side256)
 
 -- ── Geometry fixture ───────────────────────────────────────────
 

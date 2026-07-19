@@ -25,7 +25,15 @@ with open(os.path.join(_FIXTURES, 'colorpath_golden.json')) as f:
 PROPHOTO_TO_LMS = np.array(_cp['prophotoToLms'], dtype=np.float64).reshape(3, 3)
 LMS_TO_LAB = np.array(_cp['lmsToLab'], dtype=np.float64).reshape(3, 3)
 
-BELL = np.array([1, 1, 2, 4, 8, 16, 32, 64, 64, 32, 16, 8, 4, 2, 1, 1])
+try:
+    with open(os.path.join(_FIXTURES, 'palette_golden.json')) as f:
+        _pal = json.load(f)
+    BELL = np.array(_pal['bellCounts'])
+    BELL_TARGETS = np.array(_pal['bellTargets'], dtype=np.float64)
+except (OSError, KeyError) as _e:
+    raise RuntimeError(
+        'palette_golden.json with bellCounts/bellTargets is required '
+        '(regenerate with `make -C spec emit`): %r' % (_e,))
 
 
 # ── owned cbrt (ColorPath conventions; vectorized, bit-exact) ──────────────
@@ -140,7 +148,9 @@ def home_share(indices_256sq):
 # ── bell (B laws): allocation target + exact rank projection ───────────────
 
 def bell_quantile_targets():
-    """The 256 lawful L values in rank order (bellPalette's luminances)."""
+    """The 256 lawful L values in rank order (bellPalette's luminances).
+    Computed from the fixture-loaded BELL by the B-law formula; the gate
+    (goldens_test) asserts equality with the emitted fixture bellTargets."""
     out = []
     for k, c in enumerate(BELL):
         for pos in range(c):

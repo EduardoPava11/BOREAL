@@ -1,7 +1,8 @@
-// Swift kernel parity harness (Phase 5 M1) — compiles the app's pure-Swift
-// kernels (BOREAL/Kernels/*.swift) against the SAME golden fixtures the
-// Haskell contract emitted, the Python oracle re-derived, and the Zig port
-// matched. Run from spec/:  see the Makefile `swift-verify` target.
+// Swift kernel parity harness — compiles the app's pure-Swift kernels
+// (BOREAL/Kernels/*.swift) against the SAME golden fixtures the Haskell
+// contract emitted and the Python oracle re-derived (parity club since
+// M5: Haskell = Python = Swift, + the nn/v1 numpy pipeline via the ga
+// leg). Run from spec/:  see the Makefile `swift-verify` target.
 
 import Foundation
 
@@ -179,8 +180,43 @@ for f in bn["fixtures"] as! [[String: Any]] {
     }
 }
 
+// Cycleset (N laws): positional phase decomposition, Q16-exact vs the
+// golden, exactly as the oracle consumes it. The fixture mosaic is dyadic
+// /16384 — exact in f32, and q16 lands on integers with no rounding, so
+// scaling frame f by 2^f scales its golden Q16 planes exactly: the scaled
+// 4-frame tensor pins the frame-major channel order c = 4*frame + phase.
+let csAll = loadJSON("\(dir)/cycleset_golden.json")["fixture"] as! [String: Any]
+let cside = (csAll["side"] as! NSNumber).intValue
+let cmos = doubles(csAll["mosaicF64"]).map { Float($0) }
+let csGolden = (csAll["phases"] as! [Any]).map { ints32($0) }
+guard let cplanes = BorealKernels.csPhasePlanes(mosaic: cmos, side: cside)
+else { die("csPhasePlanes returned nil") }
+if cplanes.count != 4 { die("cycleset plane count") }
+for p in 0 ..< 4 {
+    if cplanes[p].map({ BorealKernels.q16(Double($0)) }) != csGolden[p] {
+        die("cycleset phase \(p) drift")
+    }
+}
+guard let creassembled = BorealKernels.csAssemble(planes: cplanes, side: cside)
+else { die("csAssemble returned nil") }
+if creassembled != cmos { die("cycleset bijection (N1) drift") }
+let cframes = (0 ..< 4).map { f in cmos.map { $0 * Float(1 << f) } }
+guard let ctensor = BorealKernels.csCycleTensor(frames: cframes, side: cside)
+else { die("csCycleTensor returned nil") }
+if ctensor.count != 16 { die("cycleset tensor is not 16 channels") }
+for f in 0 ..< 4 {
+    for p in 0 ..< 4 {
+        let c = BorealKernels.csChannelIndex(frame: f, phase: p)
+        let want = csGolden[p].map { $0 * Int32(1 << f) }
+        if ctensor[c].map({ BorealKernels.q16(Double($0)) }) != want {
+            die("cycleset tensor channel \(c) (frame \(f), phase \(p)) drift")
+        }
+    }
+}
+
 // Battle (BA5): the temporal delta primitive vs the golden, exact.
-let bt = loadJSON("\(dir)/battle_golden.json")["fixture"] as! [String: Any]
+let btAll = loadJSON("\(dir)/battle_golden.json")
+let bt = btAll["fixture"] as! [String: Any]
 let btA = bytes(bt["a"]), btB = bytes(bt["b"])
 let d = BorealKernels.frameDelta(btA, btB)
 if d.pos != ints32(bt["deltaPos"]) { die("battle deltaPos drift") }
@@ -188,6 +224,45 @@ if d.new != bytes(bt["deltaNew"]) { die("battle deltaNew drift") }
 if BorealKernels.churn(btA, btB) != Int(truncating: bt["churn"] as! NSNumber) { die("battle churn drift") }
 if BorealKernels.applyDelta(btA, pos: d.pos, new: d.new) != btB { die("BA5 round-trip drift") }
 if !BorealKernels.fractalSelfTest() { die("fractal ordering self-test failed") }
+
+// Patch-major spot goldens: verify positions DIRECTLY against the emitted
+// Haskell ordering. Identity Int32 frame (values = positions, injective)
+// plus a UInt8 frame with value = position % 251 (prime, coprime to the
+// 256-periodic patch structure, so any ordering error shows).
+let pmSpots = btAll["patchMajorSpots"] as! [[String: Any]]
+if pmSpots.count < 16 { die("patchMajorSpots fixture too small") }
+let pmIdent = (0 ..< 65536).map { Int32($0) }
+let pmIdentOut = BorealKernels.patchMajor(pmIdent)
+let pmMod = (0 ..< 65536).map { UInt8($0 % 251) }
+let pmModOut = BorealKernels.patchMajor(pmMod)
+for s in pmSpots {
+    let v = (s["v"] as! NSNumber).intValue, u = (s["u"] as! NSNumber).intValue
+    let j = (s["j"] as! NSNumber).intValue, i = (s["i"] as! NSNumber).intValue
+    let pos = (s["pos"] as! NSNumber).intValue
+    let y = 16 * v + j, x = 16 * u + i
+    if pmIdentOut[pos] != Int32(y * 256 + x) {
+        die("patchMajor spot drift (identity) at (\(v),\(u),\(j),\(i))")
+    }
+    if pmModOut[pos] != pmMod[y * 256 + x] {
+        die("patchMajor spot drift (mod-251) at (\(v),\(u),\(j),\(i))")
+    }
+}
+
+// homeShare linking golden: regenerate the index stream per the fixture's
+// baLcg convention (wrapping u64 == the unbounded Integer's bits 16..23),
+// run the kernel, exact f64 (own/65536, power-of-two denominator).
+let hsFix = btAll["homeShare"] as! [String: Any]
+let hsN = (hsFix["n"] as! NSNumber).intValue
+var hsState = UInt64(truncating: hsFix["seed"] as! NSNumber)
+var hsIdx = [UInt8](repeating: 0, count: hsN)
+for k in 0 ..< hsN {
+    hsIdx[k] = UInt8((hsState >> 16) & 0xFF)
+    hsState = hsState &* 6364136223846793005 &+ 1442695040888963407
+}
+guard let hsGot = BorealKernels.homeShare(hsIdx) else { die("homeShare returned nil") }
+if hsGot != (hsFix["expected"] as! NSNumber).doubleValue {
+    die("homeShare drift: \(hsGot)")
+}
 
 if !BorealKernels.fuseSelfTest() { die("fuse self-test failed") }
 if !BorealKernels.sceneSelfTest() { die("scene self-test failed") }

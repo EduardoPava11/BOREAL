@@ -1,7 +1,8 @@
 -- ════════════════════════════════════════════════════════════════
 -- EvNormalize: EV-aware cycles feed the NN on a common scene scale
 --
--- Mirrors the device-proven fuse.zig math EXACTLY over ℚ (see
+-- Mirrors the device-proven fuse math (FuseKernel.swift; ported
+-- from fuse.zig, tree deleted M5) EXACTLY over ℚ (see
 -- Boreal.Exposure, shared with the emitter).  The payoff law is
 -- EV4: the classic CFA-binned path is 1-HOMOGENEOUS, so exact
 -- pre-NN normalization plus a BIAS-FREE network makes exposure

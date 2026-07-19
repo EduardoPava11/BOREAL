@@ -93,6 +93,18 @@ def main():
     white = pal['oklabReference'][0]['oklab']
     assert abs(white[0] - 1) < 5e-4 and abs(white[1]) < 5e-4
 
+    # bell allocation (B laws): counts + rank-ordered quantile targets,
+    # re-derived from the written formula, bit-exact
+    bell = pal['bellCounts']
+    assert sum(bell) == 256 and len(bell) == 16 and bell == bell[::-1]
+    targets = []
+    for k, c in enumerate(bell):
+        for pos in range(c):
+            targets.append((k + (pos + 0.5) / c) / 16)
+    targets[0], targets[-1] = 0.0, 1.0
+    assert targets == pal['bellTargets'], 'bell targets drift'
+    assert all(a < b for a, b in zip(targets, targets[1:])), 'bell not rank-ordered'
+
     e = json.load(open('exposure_golden.json'))
     cases = {c['name']: c for c in e['cases']}
     assert cases['sixStop']['expectedF64'] == [1.0, 4.0, 16.0, 64.0]
@@ -343,7 +355,8 @@ def main():
         assert chi2 == f['chi2F64'], f"binomial chi2 drift: {f['name']}"
 
     # ── battle: the BA5 temporal delta primitive ─────────────────────────
-    bt = json.load(open('battle_golden.json'))['fixture']
+    btj = json.load(open('battle_golden.json'))
+    bt = btj['fixture']
     a, b = bt['a'], bt['b']
     delta = [(i, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
     assert [p for p, _ in delta] == bt['deltaPos'], 'battle deltaPos drift'
@@ -353,6 +366,29 @@ def main():
     for p, v in delta:
         applied[p] = v
     assert applied == b, 'BA5 round-trip drift'
+
+    # patch-major spots: re-derive pos from the WRITTEN convention
+    # (pos = (v*16+u)*256 + (j*16+i) on the 256x256 ceiling)
+    spots = btj['patchMajorSpots']
+    assert len(spots) >= 16, 'patchMajorSpots fixture too small'
+    for s in spots:
+        assert all(0 <= s[k] < 16 for k in 'vuji'), f'spot out of range: {s}'
+        assert s['pos'] == (s['v'] * 16 + s['u']) * 256 + (s['j'] * 16 + s['i']), \
+            f'patchMajor spot drift: {s}'
+
+    # homeShare linking: regenerate the index stream per the fixture's
+    # baLcg convention (bits 16..23 of positive s depend only on the low
+    # 64 bits, so the wrapping-u64 stream is exactly the Integer's), then
+    # compute the H statistic; own/65536 is exact in f64
+    hs = btj['homeShare']
+    assert hs['n'] == 65536, 'homeShare is the 256^2 ceiling statistic'
+    mask = (1 << 64) - 1
+    s64, own = hs['seed'], 0
+    for k in range(hs['n']):
+        if (s64 >> 16) & 0xFF == ((k // 256) // 16) * 16 + ((k % 256) // 16):
+            own += 1
+        s64 = (s64 * 6364136223846793005 + 1442695040888963407) & mask
+    assert own / 65536 == hs['expected'], 'homeShare drift'
 
     print('ORACLE GREEN: all fixtures match independent re-computation')
 
