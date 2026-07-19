@@ -1,10 +1,10 @@
-// DNGKernel.swift — pure-Swift port of the device-proven Zig DNG decoder.
+// DNGKernel.swift — pure-Swift DNG decoder (THE product decoder since M5).
 //
-// Faithful 1:1 translation of:
-//   zig/borealkernel/src/dng.zig    (TIFF/DNG parser for naked Bayer RAW)
-//   zig/borealkernel/src/ljpeg.zig  (Lossless JPEG SOF3 decoder)
-//   zig/borealkernel/src/color.zig  (XYZ_TO_PROPHOTO / matmul3 / invert3 only)
-//   zig/borealkernel/tests/dng_parse.zig (synthetic-DNG builder -> dngSelfTest)
+// Lineage: faithful 1:1 translation of the device-proven Zig originals
+// (dng.zig, ljpeg.zig, color.zig, tests/dng_parse.zig — tree deleted M5,
+// preserved on archive/zig-kernel). The synthetic-DNG builder from the
+// old test file lives on here as dngSelfTest, run by the gate's
+// swift-verify leg; this file is now the normative implementation.
 //
 // TIFF/DNG parser for NAKED Bayer RAW (the raw CFA sensor mosaic) — 14/16-bit,
 // RGGB or BGGR, with the raw mosaic in IFD0 (not a SubIFD, unlike Adobe DNGs).

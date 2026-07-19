@@ -29,8 +29,8 @@ final class CameraController: NSObject {
     private var configured = false
 
     // ── Live exposure read-out (pre-shutter) ────────────────────────────────
-    // A second, non-essential output taps the live video feed so the Zig kernel
-    // can compute an RGB histogram BEFORE the shutter fires. Coexists with the
+    // A second, non-essential output taps the live video feed so the histogram
+    // kernel (BorealKernels) can compute an RGB histogram BEFORE the shutter fires. Coexists with the
     // photo output on the same .photo-preset session; the RAW bracket path is
     // untouched.
     private let videoOut = AVCaptureVideoDataOutput()
@@ -41,8 +41,8 @@ final class CameraController: NSObject {
     /// written exclusively from the serial videoQueue's nonisolated callback, so
     /// the serial queue is its sole synchronization — never raced.
     private nonisolated(unsafe) var lastHistTime: CMTime = .invalid
-    /// The live RGB histogram, computed by Zig off-main and published here for
-    /// the capture overlay. Mutated ONLY on the main actor.
+    /// The live RGB histogram, computed by BorealKernels off-main and published
+    /// here for the capture overlay. Mutated ONLY on the main actor.
     private(set) var liveHist: Kernel.ChannelHistogram?
     /// PTS of the last histogram actually shown — drops out-of-order publishes so
     /// a late Task can't overwrite a newer frame with stale data. Main-actor only.
@@ -111,7 +111,7 @@ final class CameraController: NSObject {
         guard session.canAddOutput(output) else { throw CamError.configFailed }
         session.addOutput(output)
 
-        // Live video tap for the pre-shutter Zig histogram overlay. Non-essential:
+        // Live video tap for the pre-shutter histogram overlay. Non-essential:
         // if the device can't add it, we degrade gracefully (no overlay) rather
         // than failing the whole capture session.
         videoOut.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
@@ -125,7 +125,7 @@ final class CameraController: NSObject {
         // ProRAW yields Apple-processed DNGs — demosaiced Linear, or compressed
         // Bayer ('vc8r')/lossy DNG — which the kernel decoder rejects. A plain
         // Bayer RAW DNG (raw CFA mosaic in IFD0, Compression=1 or LJPEG SOF3) is
-        // exactly what dng.zig targets, so we leave isAppleProRAWEnabled = false
+        // exactly what the DNG kernel targets, so we leave isAppleProRAWEnabled = false
         // (the AVCapturePhotoOutput default) and select a Bayer format at capture.
         output.isAppleProRAWEnabled = false
         output.maxPhotoQualityPrioritization = .quality
@@ -208,7 +208,7 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
 extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
     /// Live-frame tap (background serial videoQueue). Throttles to ~18fps, locks
     /// the pixel buffer, stride-downsamples to a small contiguous BGRA scratch,
-    /// hands the pixels to the Zig histogram kernel, then publishes ONLY the
+    /// hands the pixels to the histogram kernel (BorealKernels), then publishes ONLY the
     /// resulting Sendable ChannelHistogram to the main actor. The CVPixelBuffer
     /// never escapes this callback (it is invalid after the unlock/return).
     nonisolated func captureOutput(_ output: AVCaptureOutput,
@@ -234,7 +234,7 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         guard srcW > 0, srcH > 0 else { return }
 
         // Step-downsample into a tight contiguous BGRA scratch (~256px max dim) so
-        // the scalar Zig scatter never has to walk a full 12MP frame. The scratch
+        // the scalar histogram scatter never has to walk a full 12MP frame. The scratch
         // is unpadded → its row stride is dstW*4.
         let maxDim = 256
         let step = max(1, max(srcW, srcH) / maxDim)

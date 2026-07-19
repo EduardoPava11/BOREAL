@@ -42,13 +42,16 @@ struct GifPreviewView: View {
             .padding(.horizontal, 18)
 
             // Hero: the selected rung, decoded index×palette, hard pixels.
-            if let img = heroImage(report) {
-                Image(decorative: img, scale: 1)
-                    .resizable()
-                    .interpolation(.none)
-                    .scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .padding(.horizontal, 18)
+            // At the ceiling the cycle's 4 per-frame maps ANIMATE at the
+            // GIF's 5 cs cadence — THE GIF, decoded by the same path.
+            // Non-ceiling rungs stay static (frames exist only at ceiling).
+            let frames = heroFrames(report)
+            if frames.count == 4 {
+                TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                    hero(frames[Int(ctx.date.timeIntervalSinceReferenceDate * 20) % 4])
+                }
+            } else if let img = heroImage(report) {
+                hero(img)
             }
 
             // Rung bar: every prefix is a rung.
@@ -79,6 +82,27 @@ struct GifPreviewView: View {
             Spacer(minLength: 8)
         }
         .padding(.top, 12)
+    }
+
+    private func hero(_ img: CGImage) -> some View {
+        Image(decorative: img, scale: 1)
+            .resizable()
+            .interpolation(.none)
+            .scaledToFit()
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 18)
+    }
+
+    /// The cycle's 4 per-frame ceiling renders — non-empty only when the
+    /// ceiling rung is selected AND the report carries all 4 frame maps.
+    private func heroFrames(_ report: CycleReport.Report) -> [CGImage] {
+        let ceiling = report.indexMaps.keys.max() ?? 16
+        let r = report.indexMaps[rung] != nil ? rung : ceiling
+        guard r == ceiling, report.frameIndices.count == 4 else { return [] }
+        let imgs = report.frameIndices.compactMap {
+            CycleReport.cgImage(indices: $0, side: ceiling, paletteRGB: report.paletteRGB)
+        }
+        return imgs.count == 4 ? imgs : []
     }
 
     private func heroImage(_ report: CycleReport.Report) -> CGImage? {

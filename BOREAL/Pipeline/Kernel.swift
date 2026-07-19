@@ -140,6 +140,10 @@ enum Kernel {
         BorealKernels.msDecode(bands, mosaicSide: mosaicSide, rung: rung)
     }
 
+    static func sigmaGrid(mosaicSide: Int, channels: [[Int32]]) -> [Float] {
+        BorealKernels.sigmaGrid(mosaicSide: mosaicSide, channels: channels)
+    }
+
     // ── GIF target + wire ──────────────────────────────────────────────────
 
     static func indexMap(L: [Int32], a: [Int32], b: [Int32],
@@ -163,16 +167,7 @@ enum Kernel {
     }
 
     static func upscaleIndices(_ indices: [UInt8], from r: Int, to target: Int) -> [UInt8] {
-        guard target % r == 0 else { return indices }
-        let k = target / r
-        var out = [UInt8](repeating: 0, count: target * target)
-        for y in 0..<target {
-            let sy = y / k
-            for x in 0..<target {
-                out[y * target + x] = indices[sy * r + x / k]
-            }
-        }
-        return out
+        BorealKernels.upscaleIndices(indices, from: r, to: target)
     }
 
     // ── Fractal record + temporal deltas (N0: the training food) ───────────

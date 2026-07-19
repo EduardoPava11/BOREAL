@@ -171,6 +171,29 @@ extension BorealKernels {
         return out
     }
 
+    /// σ head: per 16×16 latent cell, the summed |residual| over every
+    /// multi-scale level and channel landing in that cell — how much the
+    /// finer demosaics disagree with the coarser view there. This is the
+    /// dither budget / resolution gate.
+    static func sigmaGrid(mosaicSide: Int, channels: [[Int32]]) -> [Float] {
+        var acc = [Int64](repeating: 0, count: 16 * 16)
+        var offset = 0
+        for (levelIdx, r) in msRungs(side: mosaicSide).enumerated() {
+            let n = r * r
+            if levelIdx > 0 {                // residual levels only (base is absolute)
+                for bands in channels {
+                    for p in 0..<n {
+                        let row = p / r, col = p % r
+                        let cell = (row * 16 / r) * 16 + (col * 16 / r)
+                        acc[cell] += Int64(abs(bands[offset + p]))
+                    }
+                }
+            }
+            offset += n
+        }
+        return acc.map { Float($0) }
+    }
+
     /// Borrow one of three channel buffers mutably by index.
     private static func withChannel(_ ch: Int, _ l: inout [Int32],
                                     _ a: inout [Int32], _ b: inout [Int32],

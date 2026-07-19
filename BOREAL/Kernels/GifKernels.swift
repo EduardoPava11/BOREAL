@@ -29,6 +29,22 @@ extension BorealKernels {
         return out
     }
 
+    /// Nearest-neighbor upscale of a rung-r index map onto a target canvas
+    /// (rung-ladder GIF frames all share the ceiling canvas). Identity when
+    /// the target is not a multiple of r.
+    static func upscaleIndices(_ indices: [UInt8], from r: Int, to target: Int) -> [UInt8] {
+        guard target % r == 0 else { return indices }
+        let k = target / r
+        var out = [UInt8](repeating: 0, count: target * target)
+        for y in 0..<target {
+            let sy = y / k
+            for x in 0..<target {
+                out[y * target + x] = indices[sy * r + x / k]
+            }
+        }
+        return out
+    }
+
     // ── Display path: Ottosson inverse + the generated normative table ─────
 
     static let oklabInvAB: [Double] = [

@@ -257,7 +257,7 @@ final class BurstController {
                     frameL: [])
         }
 
-        // 1. Decode (device-proven dng.zig path; EXIF rides along for fuse).
+        // 1. Decode (pure-Swift DNG kernel; EXIF rides along for fuse).
         var frames: [Kernel.Frame] = []
         frames.reserveCapacity(4)
         for (j, dng) in cycle.dngs.enumerated() {
@@ -375,24 +375,10 @@ final class BurstController {
     /// σ head: per 16×16 latent cell, the summed |residual| over every
     /// multi-scale level and channel landing in that cell — how much the
     /// finer demosaics disagree with the coarser view there. This is the
-    /// dither budget / resolution gate.
+    /// dither budget / resolution gate. The math lives in MultiScaleKernel
+    /// (gate compile surface).
     nonisolated private static func sigmaGrid(mosaicSide: Int,
                                               channels: [[Int32]]) -> [Float] {
-        var acc = [Int64](repeating: 0, count: 16 * 16)
-        var offset = 0
-        for (levelIdx, r) in Kernel.msRungs(side: mosaicSide).enumerated() {
-            let n = r * r
-            if levelIdx > 0 {                // residual levels only (base is absolute)
-                for bands in channels {
-                    for p in 0..<n {
-                        let row = p / r, col = p % r
-                        let cell = (row * 16 / r) * 16 + (col * 16 / r)
-                        acc[cell] += Int64(abs(bands[offset + p]))
-                    }
-                }
-            }
-            offset += n
-        }
-        return acc.map { Float($0) }
+        Kernel.sigmaGrid(mosaicSide: mosaicSide, channels: channels)
     }
 }

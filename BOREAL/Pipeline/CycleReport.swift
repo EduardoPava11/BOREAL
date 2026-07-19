@@ -29,6 +29,7 @@ enum CycleReport {
         let side: Int                    // ceiling rung
         let paletteRGB: [UInt8]          // 256 × RGB — the seed, display-encoded
         let indexMaps: [Int: [UInt8]]    // rung → GIF index map
+        let frameIndices: [[UInt8]]      // the cycle's 4 per-frame ceiling maps (THE GIF)
         let sigma: [Float]               // 256-cell dither budget
     }
 
@@ -176,9 +177,11 @@ enum CycleReport {
 
             // The cycle's 4 PER-FRAME renders as a GIF (each frame
             // EV-normalized by its own e_t — the temporal unit at 5 cs).
-            if !outcome.frameIndices.isEmpty,
-               outcome.frameIndices.allSatisfy({ $0.count == ceiling * ceiling }),
-               let gif = Kernel.gifEncode(frames: outcome.frameIndices, side: ceiling,
+            // The same maps ride the Report so the preview can animate them.
+            let cycleFrames = outcome.frameIndices.allSatisfy({ $0.count == ceiling * ceiling })
+                ? outcome.frameIndices : []
+            if !cycleFrames.isEmpty,
+               let gif = Kernel.gifEncode(frames: cycleFrames, side: ceiling,
                                           paletteRGB: palRGB, delayCs: 5) {
                 let u = dir.appendingPathComponent("cycle.gif")
                 try gif.write(to: u)
@@ -191,7 +194,8 @@ enum CycleReport {
                 urls.append(u)
             }
             return .success(Report(urls: urls, side: bands.side, paletteRGB: palRGB,
-                                   indexMaps: indexMaps, sigma: bands.sigma))
+                                   indexMaps: indexMaps, frameIndices: cycleFrames,
+                                   sigma: bands.sigma))
         } catch {
             return .failure(BuildError(message: "write failed: \(error.localizedDescription)"))
         }
