@@ -1,5 +1,11 @@
 # BOREAL — Final Review Workflow + Executed Pass
 
+> HISTORICAL (banner added 2026-07-18): this review pass covers the
+> retired RGBT-HDR MVP (`feat/rgbt-hdr-pivot`) — a Swift `MVP/` layout
+> and Zig core that no longer exist on master. The six-dimension review
+> METHOD remains reusable; the findings do not describe the current app.
+> Current source of truth: `BOREAL-GIF-ISP-WORKFLOW.md`.
+
 **Date:** 2026-06-16. Branch: `feat/rgbt-hdr-pivot`. Scope: the MVP app (Swift `BOREAL/MVP/*`),
 the owned Zig core, and the build/integration — the state about to be tested on iPhone 17 Pro.
 

@@ -1,5 +1,12 @@
 # BOREAL — Testable-on-Device Bring-up Workflow
 
+> SUPERSEDED (banner added 2026-07-18): this bring-up plan targets the
+> retired RGBT -> HDR-TIFF + LUT product and a Zig core that no longer
+> exists (M5 deleted the Zig tree; `scripts/build-zig.sh` referenced
+> below is gone). Kept as history. Current source of truth:
+> `BOREAL-GIF-ISP-WORKFLOW.md`; testing is the four-leg
+> `make -C spec gate` + `spec/verify-device` replay.
+
 **Goal:** a minimal app that **compiles**, **links the new Zig core**, and **runs on iPhone 17 Pro**,
 exercising the RGBT → HDR-TIFF + LUT pipeline through a **simple UI**. Date: 2026-06-16.
 Branch: `feat/rgbt-hdr-pivot`.

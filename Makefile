@@ -10,10 +10,11 @@
 #   make setup         — verify prereqs + regenerate BOREAL.xcodeproj
 #   make build         — Debug build for the simulator (no signing)
 #   make test          — the spec gate (laws, goldens, oracle, Swift kernels)
-#   make test-xcode    — just the Swift unit tests
+#   make test-xcode    — xcodebuild test (NOTE: no test target exists
+#                        yet — gap G5 in BOREAL-GIF-ISP-WORKFLOW.md)
 #   make device        — Release build for generic iOS device
 #   make sim           — alias for `make build`
-#   make clean         — wipe Zig cache + Xcode DerivedData
+#   make clean         — wipe spec harness builds + Xcode DerivedData
 #   make docs          — open SETUP.md
 #
 # Variables (override on the command line):
@@ -33,11 +34,11 @@ help:
 	@echo "BOREAL build targets:"
 	@echo "  make setup      verify prereqs and regenerate $(PROJECT)"
 	@echo "  make build      Debug simulator build (no signing)"
-	@echo "  make test       run all Zig + Swift tests"
-	@echo "  make test-xcode just the Swift app tests"
+	@echo "  make test       spec gate (laws/goldens/oracle/Swift) + xcodebuild test"
+	@echo "  make test-xcode xcodebuild test (no test target yet — gap G5)"
 	@echo "  make device     Release device build"
 	@echo "  make sim        alias for 'make build'"
-	@echo "  make clean      wipe Zig cache + Xcode DerivedData"
+	@echo "  make clean      wipe spec harness builds + Xcode DerivedData"
 	@echo "  make docs       open SETUP.md"
 
 setup:

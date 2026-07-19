@@ -1,6 +1,13 @@
 # BOREAL — RGBT → HDR TIFF + Photoshop LUT (Pivot Workflow)
 
-**Status:** design / not yet built. Supersedes the 64-frame `.bcube` → GIF mission in `SETUP.md`.
+> RETIRED AS PRODUCT (banner added 2026-07-18): the HDR-TIFF + `.cube`
+> LUT product this doc pivots to was retired by the GIF-ISP refocus
+> (2026-07-17); the grade UI lives on `archive/hdr-lut`, the Zig kernels
+> on `archive/zig-kernel`. The decode/fuse/scene(ETTR) work this pivot
+> proved survives — ported to Swift — as the foundation of the GIF ISP.
+> Current source of truth: `BOREAL-GIF-ISP-WORKFLOW.md`.
+
+**Status:** design / not yet built. Supersedes the 64-frame `.bcube` → GIF mission in `SETUP.md` — and is itself superseded per the banner above.
 **Date:** 2026-06-16.
 
 ## 0. The pivot in one paragraph

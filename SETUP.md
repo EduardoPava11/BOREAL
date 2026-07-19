@@ -1,5 +1,14 @@
 # BOREAL — Setup
 
+> SUPERSEDED (banner added 2026-07-18): the mission described below —
+> `.bcube` bundles + the Looks Lab k-means editor — is TWO product
+> identities old (superseded by the RGBT-HDR pivot 2026-06-16, which was
+> itself retired by the GIF-ISP refocus 2026-07-17). Current product:
+> capture -> GIF per `BOREAL-GIF-ISP-WORKFLOW.md`; current model program:
+> `BOREAL-COREAI-TRAINING-WORKFLOW.md`. The Zig core is gone (pure
+> Swift + Metal since M5). Tooling notes below (xcodegen, sim build,
+> signing) largely still apply; the pipeline description does not.
+
 iOS 26+ app. Captures 16 sets × 4 RAW DNGs (= 64 frames) on iPhone, processes each set's quartet into a per-bin LAB statistical tensor, bundles the session into a single `.bcube` file. The Looks Lab editor re-quantizes that `.bcube` into a 64-frame GIF using PCA-seeded Lloyd-Max k-means under a weighted Mahalanobis distance — every UI control is a slider weight on a pure mathematical primitive (σ, cov, ρ, χ², ‖Δ‖) from the bcube.
 
 ## Prerequisites

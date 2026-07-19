@@ -10,10 +10,43 @@ Non-goals (RETIRED as product, 2026-07-17): HDR TIFF master, Photoshop
 .cube LUT, grade UI. The decode/fuse/color kernels they proved remain the
 ISP's foundation; the TIFF/LUT surfaces leave the app.
 
-Standing constraints: camera code is compile-only until a device run
-(signing: DEVELOPMENT_TEAM empty); spec-first discipline for every new
-kernel (law -> golden -> oracle -> port); Import-DNGs stays alive in every
-phase as the simulator-testability lever.
+Standing constraints: camera code is compile-checked in the sim; device
+runs happen when signed (first real run 2026-07-17, c386663 — Mac replay
+bit-exact); spec-first discipline for every new kernel (law -> golden ->
+oracle -> port); Import-DNGs stays alive in every phase as the
+simulator-testability lever.
+
+> STATUS (audit 2026-07-18): Phases 0-5 are EXECUTED (Phase 5 complete,
+> the Zig tree is deleted — 1cf045c). Phase 6 is SUPERSEDED by
+> `BOREAL-COREAI-TRAINING-WORKFLOW.md` (the four-net program: L-net,
+> a-net, b-net, Composer; N0 done, N1 open) — read that doc for the
+> model; the bell laws below (B1-B4) remain canon. Code-behind-spec gaps
+> still OPEN:
+>   G1 Phase 1 — sigma heat overlay toggle never built (sigma is
+>      computed and written to report.json only; no UI renders it).
+>   G2 Phase 1 — the 64-burst bypasses the preview surface entirely
+>      (share-only GIF from BurstController; the in-app preview never
+>      animates a burst, so the acceptance surface can't show the
+>      flagship product).
+>   G3 Phase 4 — LCT-per-cycle behind a flag never built (D1's GCT
+>      default is hardcoded).
+>   G4 Phase 4 — the round-trip exit law (decode-with-system-decoder ==
+>      our decode) is verified nowhere; verify-swift pins encode bytes
+>      against the golden but no harness runs a system decoder.
+>   G5 Test program — BOREALTests target still absent; root
+>      `make test-xcode` runs xcodebuild test against a project with no
+>      test target.
+> CLOSED 2026-07-18: the geometry contract now carries the
+> DEVICE-VERIFIED facts (decoded mosaic 4032x3024 — NOT the 4224
+> pre-crop tile raster — BGGR, black 528, white 4095, 12-bit; c386663)
+> and the crop DERIVATION as law (CS1 derives, CS6 case table, CS7
+> even-origin, CS8 device facts); the app's canonicalSide/cropOrigin
+> moved to Kernels/GeometryKernel.swift and the swift-verify leg
+> replays the fixture's crop-case table against them — the crop math
+> is gate-protected end to end. The orphaned S-transform pyramid leg
+> (EmbeddedPyramid.hs, Boreal.Pyramid, pyramid_golden.json) is
+> RETIRED from the gate (superseded by MultiScale; archive branches +
+> git history preserve it).
 
 ---
 
@@ -24,8 +57,9 @@ nothing in the UI mentions TIFF or LUT.
 
 - Archive, don't delete: move the HDR/LUT surface (ReviewView grade UI,
   GradeControls, TIFF/LUT share actions, PipelineModel's TIFF tail) to
-  `archive/hdr-lut` branch; master keeps kernels (`tiff.zig`/`lut.zig` stay
-  in the kernel — tested, harmless, unreferenced by the app).
+  `archive/hdr-lut` branch. (Historical note: `tiff.zig`/`lut.zig` stayed
+  in the Zig kernel at the time; since M5 deleted the Zig tree, they
+  survive only on `archive/zig-kernel` and `archive/hdr-lut`.)
 - Keep and re-point: decode/fuse/demosaic/color facade, Import path
   (now feeds the GIF pipeline), live histogram overlay, camera lifecycle.
 - UI after Phase 0: shutter = capture one 4-frame cycle -> GIF preview
@@ -110,33 +144,53 @@ Demosaic AT each scale, not full-res-then-box. This redefines the pyramid:
 - Exit gate: a burst on device produces one .gif file; decode-with-
   system-decoder == our decode (round-trip law); AirDrop shares it.
 
-## Phase 5 — Swift + Metal migration (DECREE: Zig is dropped)
+## Phase 5 — Swift + Metal migration (COMPLETE 2026-07-17)
 
 Daniel's call, made twice (SixFour precedent, reaffirmed 2026-07-17):
 this is a Swift and Metal app. Not a benchmark question. The spec +
-goldens are language-neutral by design, so every port is gated bit-exact
+goldens are language-neutral by design, so every port was gated bit-exact
 before cutover. Never propose Zig for BOREAL again.
 
-- M1 (DONE 2026-07-17): the live 16-LAB kernels ported to pure Swift
-  `BOREAL/Kernels/` (enum BorealKernels): owned cbrt + OKLab + Q16,
+- M1 (DONE 2026-07-17, c202639): the live 16-LAB kernels ported to pure
+  Swift `BOREAL/Kernels/` (enum BorealKernels): owned cbrt + OKLab + Q16,
   multi-scale encode/decode, normalize, index map, sRGB display path
-  (generated SRGBTable.swift), GIF89a wire. Verified by the new
+  (generated SRGBTable.swift), GIF89a wire. Verified by the
   `make -C spec swift-verify` gate leg (swiftc harness against the SAME
-  goldens — 4-language parity: Haskell = Python = Zig = Swift, all
-  bit/byte-exact). App facade switched; the product path is Swift.
-- M2: Metal compute for the hot pair (msEncode rung means, index map)
-  at 64-frame burst load; integer/f64 conventions preserved in-shader;
-  same fixture parity before cutover.
-- M3: port fuse, scene (ETTR), demosaic MHC, color to Swift.
-- M4: the DNG/LJPEG decoder LAST (1554 device-proven lines). Preferred
-  route: the 6teen3 CVPixelBuffer capture path removes the decoder from
-  the hot path entirely; Import/sim still needs one - port or replace
-  then. Off-product-path kernels (S-transform pyramid, box reduce) port
-  opportunistically.
-- M5: delete zig/ + build scripts once M3/M4 are green (git history
-  preserves; binomial.zig user WIP goes to a branch first).
+  goldens). App facade switched; the product path is Swift.
+- M2 (DONE 2026-07-17, 2265b0b): MetalIndexMapper — inline-source
+  compute shader, i64 in-shader, strict-less ties-lowest preserved, GPU
+  bit-identical to CPU (gate runs it on the Mac GPU, loud skip without
+  Metal); msEncode rung means multicore via concurrentPerform (per-cell
+  f64 unchanged, bit-identical). Metal has no f64, so the encode
+  reduction stays CPU-exact; a GPU integer-sum variant (M2b) would need
+  a spec change first, only if device numbers demand it.
+- M3 (DONE 2026-07-17, 68eeed3): fuse, scene (ETTR), color ported to
+  Swift (FuseKernel, SceneKernel).
+- M4 (DONE 2026-07-17, 68eeed3): the DNG/LJPEG decoder ported
+  (DNGKernel.swift, ~1400 lines; DefaultCrop now applied at decode —
+  deliberate behavior change, proven on the real device bundle). The
+  6teen3 CVPixelBuffer capture route remains an option to take the
+  decoder off the hot path later; Import/sim uses the Swift decoder.
+- M5 (DONE 2026-07-17, 1cf045c): the Zig tree, build scripts, xcfilelist
+  and bridging header are DELETED; fixtures moved to repo-root
+  `fixtures/`; `archive/zig-kernel` preserves everything including the
+  binomial.zig WIP. Parity club after M5: Haskell = Python oracle =
+  Swift kernels (+ nn/v1 NumPy pipeline as the 4th independent
+  implementation), all bit/byte-exact.
 
 ## Phase 6 — Training (the learned ISP)
+
+> SUPERSEDED (2026-07-18): the model is no longer ONE network. The
+> current architecture is the FOUR-NET program — L-net (H-JEPA level 1
+> on L, battle laws BA1-BA6 as its dynamics), a-net + b-net (chroma
+> pair), Composer — shipped as one multi-function .aimodel, with the
+> three-tier no-train-on-device boundary. Source of truth:
+> `BOREAL-COREAI-TRAINING-WORKFLOW.md` (N0 done, N1 open), governed by
+> `BOREAL-TRAINING-REGIMEN-WORKFLOW.md` and gated by
+> `BOREAL-TILING-INVESTIGATIONS.md` (I0-I8, still OPEN). The bell
+> requirement below (B1-B4) and the per-rung +1 dB gate remain canon;
+> the one-network framing below is kept as the historical seed of that
+> design.
 
 THE MODEL (decided 2026-07-17): ONE H-JEPA-trained network that demosaics
 the square Bayer pattern and "sees" at every partition — 16x16, 32x32,
@@ -172,26 +226,36 @@ gap.
 
 Runs through every phase, not after them:
 
-1. `make -C spec gate` + `zig build test -Drequire_fixtures=true` — every
-   turn, already standing.
+1. `make -C spec gate` — every turn, standing. Four legs: Haskell laws
+   -> emit goldens -> Python oracle -> swift-verify (compiles the app's
+   actual Kernels/ against the same fixtures, plus Metal GPU parity).
+   (The old `zig build test` leg died with M5.)
 2. Sim path: Import 4 DNGs -> full GIF pipeline -> Phase 1 preview. No
    camera needed; this is the daily driver.
-3. Device path: LAB report bundle -> **Mac replay script** (to build,
-   Phase 1-adjacent): re-runs the pipeline on the bundled DNGs with the
-   oracle conventions and asserts equality with the phone's own
-   report.json — end-to-end bit-exactness with real photons.
-4. Swift-glue harness: crop alignment, deinterleave, sigma indexing get
-   sim-runnable tests once the stale test target is revived (Phase 0
-   cleans the target list; add BOREALTests back then).
+3. Device path (BUILT — `spec/verify-device`, `make -C spec
+   verify-device DIR=...`): replays a LAB report bundle's DNGs through
+   the same Swift kernels on the Mac and asserts bit-exact equality
+   with the phone's own report.json. Proven on real photons 2026-07-17
+   (c386663: all stack coefficients, index maps, chi^2, homeShare exact).
+4. STILL OPEN (gap G5): Swift-glue harness — crop alignment,
+   deinterleave, sigma indexing have no sim-runnable tests; the
+   BOREALTests target was never added back, and root `make test-xcode`
+   currently runs against a project with no test target.
 
 ## Decision points (Daniel)
 
-- D1 Phase 4 palette: GCT-from-burst vs LCT-per-cycle (default: GCT first).
-- D2 Phase 5: migration threshold — what measured speedup justifies a port.
-- D3 Phase 3: the MS4 consistency envelope (how far adjacent rungs may
-  disagree before it's a defect, not a feature).
-- D4 Retirement depth: archive branch only, or also strip tiff/lut from
-  the kernel build (default: keep in kernel, out of app).
+- D1 Phase 4 palette: GCT-from-burst vs LCT-per-cycle — STILL OPEN.
+  De facto: GCT-from-first-cycle is hardcoded (governing palette); the
+  LCT flag was never built (gap G3). Decide after banding is measured
+  on device bursts through the Phase 1 preview.
+- D2 Phase 5: MOOT — the migration was decreed, not benchmarked;
+  Phase 5 is complete.
+- D3 Phase 3: the MS4 consistency envelope — landed as MS4a (linear
+  nesting exact over Q) + MS4b (OKLab nesting bounded 32768 Q16 as a
+  noise-envelope regression pin). Whether that bound needs tightening
+  on real scenes stays open.
+- D4 Retirement depth: RESOLVED beyond both options — M5 deleted the
+  whole Zig tree; tiff/lut survive only on the archive branches.
 - D5 Bell-SOM reconciliation: the bell's sparse extremes are ISOLATED
   colors by construction (one color covering a whole L band), so the
   uniform seed's flat neighbor-Lipschitz bound (L2, K=0.06) cannot hold
