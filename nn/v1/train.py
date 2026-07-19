@@ -321,8 +321,18 @@ def main():
                     help='warm-start weights from a .safetensors file')
     args = ap.parse_args()
 
+    sys.stdout.reconfigure(line_buffering=True)        # live logs under nohup
     global RES_GAIN
     RES_GAIN = args.res_gain                           # read by losses/judges
+    metrics_path = (args.save.replace('.safetensors', '.metrics.jsonl')
+                    if args.save else '')
+
+    def emit(event, **kv):
+        if not metrics_path:
+            return
+        import json
+        with open(metrics_path, 'a') as f:
+            f.write(json.dumps({'event': event, **kv}) + '\n')
     rng = np.random.default_rng(17)
     probe_rng = np.random.default_rng(1234)            # HELD OUT, never trained
     model = V1H(d=args.d, in_side=args.side // 2)
@@ -345,6 +355,10 @@ def main():
     print(f'probe = {args.probe_scenes} held-out scenes (rng 1234)')
     print('baseline CLEAN classic:', fmt(clean_m))
     print('baseline NOISY classic:', fmt(noisy_m))
+    emit('start', steps=args.steps, batch=args.batch, d=args.d,
+         res_gain=args.res_gain, workers=args.workers,
+         config=vars(args), clean=clean_m, noisy=noisy_m,
+         t0=time.time())
 
     t0 = time.time()
     for step in range(1, args.steps + 1):
@@ -400,6 +414,8 @@ def main():
                 raise SystemExit(2)
             print(f'step {step:4d}  loss {float(loss):.5f}  tau {tau:.3f}  '
                   f'w_seed {w_seed:.3f}  {fmt(m)}  ({time.time() - t0:.1f}s)')
+            emit('eval', step=step, loss=float(loss), tau=tau,
+                 elapsed=time.time() - t0, **m)
         if (args.save and args.ckpt_every > 0
                 and step % args.ckpt_every == 0):
             ck = args.save.replace('.safetensors', '.ckpt.safetensors')
@@ -422,6 +438,7 @@ def main():
             dom += 1
     print(f'dominance vs clean classic (equilibrium layer: dE_eq & '
           f'band-distance_eq & homeShare_raw): {dom}/{len(final_rows)} scenes')
+    emit('final', dominance=dom, scenes=len(final_rows), **final_m)
     if args.save:
         mx.save_safetensors(
             args.save, dict(mlx.utils.tree_flatten(model.parameters())))
