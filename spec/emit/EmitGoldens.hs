@@ -30,6 +30,7 @@ import Boreal.PatchGrid
 import Boreal.Binomial
 import Boreal.ColorPath
 import Boreal.CycleSet
+import Boreal.DitherWalk
 import Boreal.Exposure
 import Boreal.Geometry
 import Boreal.GifTarget
@@ -409,6 +410,36 @@ battleJson = jObj
     hsSeed  = 13 :: Int
     hsFrame = baLcg hsSeed (side256 * side256)
 
+-- ── Walk fixture (P1: the FS walk loop, DW7/DW8) ───────────────
+
+walkJson :: String
+walkJson = jObj
+  [ ("conventions", jObj
+      [ ("path",      jStr "serpentine: even rows left->right, odd rows right->left; emission serpentine, stored ROW-MAJOR")
+      , ("pick",      jStr "windowPick r on CORRECTED value (target + carry, Q16 ints, never clamped); window row-major dv-outer du-ascending, cells clamped to the 16x16 grid; STRICT-LESS argmin")
+      , ("split",     jStr "FS shares (7,3,5,1)/16 floor-div; remainder joins the EAST share; per channel")
+      , ("neighbors", jStr "walk order: east,(sw,s,se) next row; kernel MIRRORS horizontally on odd rows; out-of-frame shares DROPPED and summed per channel")
+      , ("conservation", jStr "sum(target) - sum(palette[emitted]) == droppedSum per channel, exact (DW8)")
+      , ("jitter",    jStr "target = pure-H upscale of the palette + LCG jitter: s' = s*6364136223846793005 + 1442695040888963407 (unbounded Integer); delta = (s' div 65536) mod 4001 - 2000; three draws per pixel (L,a,b)")
+      ])
+  , ("r",        show (2 :: Int))
+  , ("side",     show wSide)
+  , ("jitterSeed", show (7 :: Int))
+  , ("paletteL", jInts [ l | (l, _, _) <- wPal ])
+  , ("paletteA", jInts [ a | (_, a, _) <- wPal ])
+  , ("paletteB", jInts [ b | (_, _, b) <- wPal ])
+  , ("targetL",  jInts [ l | (l, _, _) <- wTgt ])
+  , ("targetA",  jInts [ a | (_, a, _) <- wTgt ])
+  , ("targetB",  jInts [ b | (_, _, b) <- wTgt ])
+  , ("indices",  jInts wIdx)
+  , ("dropped",  jInts [ dl, da, db ])
+  ]
+  where
+    wSide = 16 :: Int
+    wPal = [ quantizeLab (bellPalette i) | i <- [0 .. 255] ]
+    wTgt = jitterTargetFor wPal 7 wSide
+    (wIdx, (dl, da, db)) = fsWalk 2 wPal wTgt
+
 -- ── Geometry fixture ───────────────────────────────────────────
 
 geometryJson :: String
@@ -463,6 +494,7 @@ main = do
   emit "cycleset_golden.json" cyclesetJson
   emit "binomial_golden.json" binomialJson
   emit "battle_golden.json" battleJson
+  emit "walk_golden.json" walkJson
   writeFile "../BOREAL/Kernels/SRGBTable.swift" srgbTableSwift
   putStrLn "  wrote ../BOREAL/Kernels/SRGBTable.swift (generated)"
   putStrLn "GOLDENS EMITTED"

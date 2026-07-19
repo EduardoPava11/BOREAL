@@ -19,6 +19,15 @@
 --       gracefully into the exact one
 --   DW6 the speed law: r = 2 costs 25 evaluations per pixel vs
 --       256 — 10.24× fewer, closed form
+--   DW7 the LOOP inherits the seed anchor (P1, 2026-07-19): on the
+--       pure-H scene every error is zero, so the full FS walk loop
+--       — carries and all — emits exactly pure-H with nothing
+--       dropped
+--   DW8 conservation (P1): summing the per-pixel exact splits over
+--       the frame telescopes — per channel,
+--       Σ target − Σ palette[emitted] == Σ dropped border shares,
+--       exactly, in Q16 integers. The walk loses NO error except
+--       over the frame edge, and says how much.
 -- ════════════════════════════════════════════════════════════════
 
 module Main where
@@ -33,23 +42,12 @@ import Boreal.Palette (bellPalette)
 palette :: [Q16Lab]
 palette = [ quantizeLab (bellPalette i) | i <- [0 .. 255] ]
 
--- Upscale the palette itself to an s² target (the pure-H scene).
+-- Scene builders shared with the emitter (Boreal.DitherWalk).
 seedTarget :: Int -> [Q16Lab]
-seedTarget s =
-  [ palette !! (v * 16 + u)
-  | y <- [0 .. s - 1], x <- [0 .. s - 1]
-  , let v = y * 16 `div` s, let u = x * 16 `div` s ]
+seedTarget = seedTargetFor palette
 
--- LCG-jittered target around the seed (a "real" scene stand-in).
 jitterTarget :: Int -> Int -> [Q16Lab]
-jitterTarget seed s = go (map j (iterate lcg (fromIntegral seed))) (seedTarget s)
-  where
-    lcg n = n * 6364136223846793005 + 1442695040888963407 :: Integer
-    j n = fromIntegral ((n `div` 65536) `mod` 4001 - 2000)
-    go (dl : da : db : rest) ((l, a, b) : ps) =
-      (l + dl, a + da, b + db) : go rest ps
-    go _ [] = []
-    go _ ps = ps
+jitterTarget = jitterTargetFor palette
 
 -- DW1
 lawTotality :: Bool
@@ -97,6 +95,33 @@ lawSpeed =
     && (256 :: Rational) / 25 > 10
     && 256 `div` 25 == (10 :: Int)
 
+-- DW7
+lawLoopSeedAnchor :: Bool
+lawLoopSeedAnchor =
+  idx == pureH && dropped == (0, 0, 0)
+  where
+    s = 32
+    (idx, dropped) = fsWalk 2 palette (seedTarget s)
+    pureH = [ (y * 16 `div` s) * 16 + (x * 16 `div` s)
+            | y <- [0 .. s - 1], x <- [0 .. s - 1] ]
+
+-- DW8
+lawLoopConservation :: Bool
+lawLoopConservation =
+  (sumc t0 - sumc p0, sumc t1 - sumc p1, sumc t2 - sumc p2)
+    == dropped
+  where
+    s = 16
+    tgt = jitterTarget 7 s
+    (idx, dropped) = fsWalk 2 palette tgt
+    picks = map (palette !!) idx
+    (t0, t1, t2) = unzip3' tgt
+    (p0, p1, p2) = unzip3' picks
+    unzip3' xs = ( [ a | (a, _, _) <- xs ]
+                 , [ b | (_, b, _) <- xs ]
+                 , [ c | (_, _, c) <- xs ] )
+    sumc = sum
+
 -- ── Harness ────────────────────────────────────────────────────
 
 main :: IO ()
@@ -111,6 +136,8 @@ main = do
     , ("DW4 on the seed itself the walk IS pure-H",           lawSeedAnchor)
     , ("DW5 full window == global ties-lowest argmin",        lawFullWindowIsArgmin)
     , ("DW6 r=2: 25 vs 256 evals — 10.24× fewer, closed form", lawSpeed)
+    , ("DW7 the FS LOOP inherits the seed anchor (pure-H, 0 drop)", lawLoopSeedAnchor)
+    , ("DW8 conservation: Σtgt − Σemitted == Σdropped, exact",  lawLoopConservation)
     ]
 
 checkAll :: [(String, Bool)] -> IO ()

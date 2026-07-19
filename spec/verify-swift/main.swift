@@ -264,6 +264,28 @@ if hsGot != (hsFix["expected"] as! NSNumber).doubleValue {
     die("homeShare drift: \(hsGot)")
 }
 
+// Ditherwalk (P1): the FS walk loop vs the golden — indices byte-exact,
+// dropped sums exact, and DW8 conservation re-asserted from the Swift
+// outputs themselves (sum(target) − sum(palette[emitted]) == dropped).
+let wk = loadJSON("\(dir)/walk_golden.json")
+let wSide = (wk["side"] as! NSNumber).intValue
+let wR = (wk["r"] as! NSNumber).intValue
+let wTL = ints32(wk["targetL"]), wTA = ints32(wk["targetA"]), wTB = ints32(wk["targetB"])
+let wPL = ints32(wk["paletteL"]), wPA = ints32(wk["paletteA"]), wPB = ints32(wk["paletteB"])
+let wGot = BorealKernels.fsWalk(targetL: wTL, targetA: wTA, targetB: wTB,
+                                palL: wPL, palA: wPA, palB: wPB,
+                                side: wSide, r: wR)
+if wGot.indices != bytes(wk["indices"]) { die("walk indices drift") }
+let wDrop = (wk["dropped"] as! [Any]).map { Int64(truncating: $0 as! NSNumber) }
+if wGot.dropped.0 != wDrop[0] || wGot.dropped.1 != wDrop[1]
+    || wGot.dropped.2 != wDrop[2] { die("walk dropped drift") }
+for (ch, target, pal) in [(0, wTL, wPL), (1, wTA, wPA), (2, wTB, wPB)] {
+    let tSum = target.reduce(Int64(0)) { $0 + Int64($1) }
+    let eSum = wGot.indices.reduce(Int64(0)) { $0 + Int64(pal[Int($1)]) }
+    let drop = [wGot.dropped.0, wGot.dropped.1, wGot.dropped.2][ch]
+    if tSum - eSum != drop { die("DW8 conservation broken on channel \(ch)") }
+}
+
 if !BorealKernels.fuseSelfTest() { die("fuse self-test failed") }
 if !BorealKernels.sceneSelfTest() { die("scene self-test failed") }
 if !BorealKernels.dngSelfTest() { die("DNG self-test failed") }

@@ -390,6 +390,76 @@ def main():
         s64 = (s64 * 6364136223846793005 + 1442695040888963407) & mask
     assert own / 65536 == hs['expected'], 'homeShare drift'
 
+    # ── ditherwalk: the FS walk loop (P1), from the written conventions ──
+    wk = json.load(open('walk_golden.json'))
+    wside, wr = wk['side'], wk['r']
+    wn = wside * wside
+    wpal = list(zip(wk['paletteL'], wk['paletteA'], wk['paletteB']))
+    assert len(wpal) == 256, 'walk palette is the 16x16 grid'
+
+    # target = pure-H upscale of the palette + LCG jitter: the stream starts
+    # AT the seed; s' = s*6364136223846793005 + 1442695040888963407 over
+    # unbounded ints; delta = (s' div 65536) mod 4001 - 2000; three draws
+    # per pixel (L,a,b), pixels row-major
+    wstate, wdeltas = wk['jitterSeed'], []
+    for _ in range(3 * wn):
+        wdeltas.append((wstate // 65536) % 4001 - 2000)
+        wstate = wstate * 6364136223846793005 + 1442695040888963407
+    wtarget = []
+    for y in range(wside):
+        for x in range(wside):
+            hv, hu = y * 16 // wside, x * 16 // wside
+            p = wpal[hv * 16 + hu]
+            k = 3 * (y * wside + x)
+            wtarget.append((p[0] + wdeltas[k], p[1] + wdeltas[k + 1],
+                            p[2] + wdeltas[k + 2]))
+    for ch, key in enumerate(('targetL', 'targetA', 'targetB')):
+        assert [t[ch] for t in wtarget] == wk[key], f'walk {key} drift'
+
+    # the walk: serpentine path; corrected = target + carry (Q16 ints,
+    # never clamped); windowed strict-less argmin around the HOME cell
+    # (window row-major dv-outer du-ascending, cells clamped to [0,15]);
+    # FS shares (7,3,5,1)/16 floor-div, remainder joins EAST; neighbors in
+    # WALK order east,(sw,s,se), kernel mirrored on odd rows; out-of-frame
+    # shares dropped and summed per channel; output stored row-major
+    wcarry = [[0, 0, 0] for _ in range(wn)]
+    wout = [0] * wn
+    wdropped = [0, 0, 0]
+    for y in range(wside):
+        xs = range(wside) if y % 2 == 0 else range(wside - 1, -1, -1)
+        for x in xs:
+            i = y * wside + x
+            corr = tuple(wtarget[i][c] + wcarry[i][c] for c in range(3))
+            hv, hu = y * 16 // wside, x * 16 // wside
+            best, bd = 0, None
+            for dv in range(-wr, wr + 1):
+                for du in range(-wr, wr + 1):
+                    j = max(0, min(15, hv + dv)) * 16 + max(0, min(15, hu + du))
+                    d = sum((wpal[j][c] - corr[c]) ** 2 for c in range(3))
+                    if bd is None or d < bd:
+                        best, bd = j, d
+            wout[i] = best
+            if y % 2 == 0:
+                nbrs = [(y, x + 1), (y + 1, x - 1), (y + 1, x), (y + 1, x + 1)]
+            else:
+                nbrs = [(y, x - 1), (y + 1, x + 1), (y + 1, x), (y + 1, x - 1)]
+            for c in range(3):
+                e = corr[c] - wpal[best][c]
+                e7, e3 = (7 * e) // 16, (3 * e) // 16
+                e5, e1 = (5 * e) // 16, e // 16
+                shares = [e7 + (e - (e7 + e3 + e5 + e1)), e3, e5, e1]
+                for (ny, nx), sh in zip(nbrs, shares):
+                    if 0 <= ny < wside and 0 <= nx < wside:
+                        wcarry[ny * wside + nx][c] += sh
+                    else:
+                        wdropped[c] += sh
+    assert wout == wk['indices'], 'walk indices drift'
+    assert wdropped == wk['dropped'], 'walk dropped drift'
+    # DW8 conservation: what enters minus what is emitted is what fell off
+    for c in range(3):
+        assert sum(t[c] for t in wtarget) - sum(wpal[j][c] for j in wout) \
+            == wdropped[c], f'DW8 conservation broken on channel {c}'
+
     print('ORACLE GREEN: all fixtures match independent re-computation')
 
 
