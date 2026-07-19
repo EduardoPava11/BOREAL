@@ -117,7 +117,7 @@ def sigma_weights(b16, b256):
 
 def losses(model, x, target_lab, seed_lab, base16, base256,
            tau=0.1, w_home=0.05, w_seed=1.0, band_chi2=False,
-           pix_w=None, y_star=None, w_battle=0.0):
+           pix_w=None, y_star=None, w_battle=0.0, w_chi2=0.01):
     # RESIDUAL-TO-CLASSIC (N3: the input contains the classic baseline
     # verbatim — identity is already a demosaicer). The net predicts
     # residuals; predictions START at classic-on-noisy performance.
@@ -153,7 +153,9 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
     chi2_soft = ((usage - n / 256) ** 2).sum(-1) * 256 / n   # (B,)
     if band_chi2:
         # V1f: the band is the target — no penalty inside it, no pull
-        # to the sterile floor.
+        # to the sterile floor. E1 (DALL-E dVAE lesson, research doc):
+        # this term runs at FULL weight from step 0 while tau anneals
+        # underneath it — never co-anneal the usage prior.
         l_chi2 = mx.mean(mx.maximum(chi2_soft - BAND_HI, 0.0)) / n
     else:
         l_chi2 = mx.mean(chi2_soft) / n
@@ -189,7 +191,7 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
         l_battle = mx.zeros(())
 
     total = (l_ceiling + w_seed * l_seed + 0.1 * l_serve
-             + 0.01 * l_chi2 + 0.1 * l_bell + w_home * l_home
+             + w_chi2 * l_chi2 + 0.1 * l_bell + w_home * l_home
              + w_battle * l_battle)
     return total, (l_ceiling, l_seed, l_serve, l_chi2, l_bell, l_home, l_battle)
 
@@ -297,6 +299,14 @@ def main():
                     help='residual scale off the classic base (RES_GAIN)')
     ap.add_argument('--band-chi2', action='store_true',
                     help='V1f band target for the soft chi^2 (150-400)')
+    ap.add_argument('--w-chi2', type=float, default=0.01,
+                    help='weight of the chi^2 term (E1: full from step 0)')
+    ap.add_argument('--gap-anneal', action='store_true',
+                    help='E1: anneal tau by the measured soft-vs-hard gap '
+                         '(Agustsson), not by clock')
+    ap.add_argument('--gap-threshold', type=float, default=3.0,
+                    help='PAUSE tau cooling while (soft-hard)/hard '
+                         'serve gap exceeds this (divergence guard)')
     ap.add_argument('--sigma-curriculum', action='store_true',
                     help='weight ceiling/serve by coarse-vs-fine sigma')
     ap.add_argument('--battle-every', type=int, default=0,
@@ -357,7 +367,25 @@ def main():
         lambda m, x, t, sl, b16, b256, tau, ws, pw, ys, wb: losses(
             m, x, t, sl, b16, b256, tau=tau, w_home=args.w_home,
             w_seed=ws, band_chi2=args.band_chi2, pix_w=pw,
-            y_star=ys, w_battle=wb)[0])
+            y_star=ys, w_battle=wb, w_chi2=args.w_chi2)[0])
+
+    def soft_hard_gap(x, t, b16m, tau):
+        """E1 (Agustsson): the annealing signal is the MEASURED
+        divergence between soft-served and hard-argmin distances —
+        cool tau only when soft has effectively converged to hard at
+        the current temperature. Forward pass only, no grad."""
+        s_res, _ = model(x)
+        seed = b16m + RES_GAIN * s_res
+        pal = seed.reshape(-1, 256, 3)
+        tgt = t.reshape(-1, 65536, 3)
+        d2 = ((tgt ** 2).sum(-1, keepdims=True)
+              + (pal ** 2).sum(-1)[:, None, :]
+              - 2.0 * (tgt @ pal.transpose(0, 2, 1)))
+        scale = mx.mean(d2, axis=(1, 2), keepdims=True) + 1e-12
+        w = mx.softmax(-d2 / (tau * scale), axis=-1)
+        soft = mx.mean((w * d2).sum(-1))
+        hard = mx.mean(d2.min(axis=-1))
+        return float((soft - hard) / (hard + 1e-12))
 
     probe = synth.batch(probe_rng, n=args.probe_scenes, side=args.side)
     clean_m, clean_rows = baseline_rows(probe, 'clean', with_battle=True,
@@ -378,11 +406,26 @@ def main():
     prefetcher = (Prefetcher(args.workers, args.batch, args.side)
                   if args.workers > 0 else None)
     t0 = time.time()
+    # E1 controller v2 (v1 FAILED 2026-07-18: cool-only-when-converged
+    # never cools — the gap at warm tau is a function of tau itself,
+    # and hard metrics decouple from the soft loss at fixed warm tau,
+    # degrading silently. Correct reading of Agustsson: cooling is the
+    # DEFAULT; the gap only PAUSES it when soft has diverged too far
+    # from hard at the current temperature).
+    anneal_progress = 0
+    gap_paused = False
     try:
         for step in range(1, args.steps + 1):
-            # R3 compression anneal: warm (soft, forgiving) -> sharp
-            # (near-hard assignment) geometrically across the run.
-            tau = 0.5 * (0.05 / 0.5) ** ((step - 1) / max(args.steps - 1, 1))
+            if args.gap_anneal:
+                if not gap_paused:
+                    anneal_progress += 1
+                tau = 0.5 * (0.05 / 0.5) ** (anneal_progress
+                                             / max(args.steps - 1, 1))
+            else:
+                # R3 compression anneal: warm (soft, forgiving) -> sharp
+                # (near-hard assignment) geometrically across the run.
+                tau = 0.5 * (0.05 / 0.5) ** ((step - 1)
+                                             / max(args.steps - 1, 1))
             w_seed = (0.5 ** (step / args.anchor_half_life)
                       if args.anchor_half_life > 0 else 1.0)
             if args.cosine_lr:
@@ -419,6 +462,12 @@ def main():
                              pw, ys, wb)
             opt.update(model, grads)
             mx.eval(model.parameters(), opt.state)
+
+            # E1 controller v2: pause the clock cooling while the
+            # soft-vs-hard gap is beyond threshold (divergence guard).
+            if args.gap_anneal and step % 25 == 0:
+                g = soft_hard_gap(x, t, b16m, tau)
+                gap_paused = g > args.gap_threshold
 
             if step % args.eval_every == 0 or step == 1 or step == args.steps:
                 deep_eval = (step % args.battle_eval_every == 0
