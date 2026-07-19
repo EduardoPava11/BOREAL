@@ -27,14 +27,15 @@ def make_scene(rng, side=512, blobs=24):
     (clips in every frame above base). Gaussian color blobs over a
     global gradient, occasional hard edge; a squared ramp keeps most
     area in the low stops, photograph-like."""
-    yy, xx = np.mgrid[0:side, 0:side] / side
+    yy, xx = (np.mgrid[0:side, 0:side] / side).astype(np.float32)
     rgb = np.stack([0.008 + 0.06 * xx ** 2, 0.008 + 0.06 * yy ** 2,
                     0.008 + 0.06 * (1 - xx) ** 2], axis=-1)
     for _ in range(blobs):
         cy, cx = rng.random(2)
         sig = 0.03 + 0.15 * rng.random()
-        amp = rng.random(3) * (0.8 * rng.random() ** 2)   # few bright, many dim
-        g = np.exp(-(((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * sig ** 2)))
+        amp = (rng.random(3) * (0.8 * rng.random() ** 2)).astype(np.float32)
+        g = np.exp(-(((yy - np.float32(cy)) ** 2 + (xx - np.float32(cx)) ** 2)
+                     / np.float32(2 * sig ** 2)))
         rgb += g[..., None] * amp[None, None, :]
     if rng.random() < 0.5:                      # a hard edge into shadow
         cut = int(side * (0.25 + 0.5 * rng.random()))

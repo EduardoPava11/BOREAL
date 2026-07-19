@@ -65,6 +65,43 @@ HOME = mx.array(((_yy // 16) * 16 + _xx // 16).ravel())     # (65536,)
 BAND_HI = battle.BAND[1]
 
 
+def _gen_batch(seed, n, side):
+    """Worker-side batch generation (module-level for pickling). Each
+    batch gets its own child rng — reproducible per (seed) regardless
+    of worker scheduling."""
+    return synth.batch(np.random.default_rng(seed), n=n, side=side)
+
+
+class Prefetcher:
+    """Parallel scene synthesis: the measured step is ~64 ms GPU but
+    ~250 ms single-threaded numpy generation — the M3 Max GPU idles
+    76% of the time. A process pool with a few batches in flight
+    keeps the queue ahead of the GPU (10 P-cores; scenes are
+    independent)."""
+
+    def __init__(self, workers, n, side, base_seed=1_000_000):
+        from concurrent.futures import ProcessPoolExecutor
+        self.pool = ProcessPoolExecutor(max_workers=workers)
+        self.n, self.side = n, side
+        self.next_seed = base_seed
+        self.futures = []
+        for _ in range(workers + 2):                   # prefetch depth
+            self._submit()
+
+    def _submit(self):
+        self.futures.append(
+            self.pool.submit(_gen_batch, self.next_seed, self.n, self.side))
+        self.next_seed += 1
+
+    def get(self):
+        batch = self.futures.pop(0).result()
+        self._submit()
+        return batch
+
+    def close(self):
+        self.pool.shutdown(wait=False, cancel_futures=True)
+
+
 def sigma_weights(b16, b256):
     """Per-pixel curriculum weights from the coarse-vs-fine sigma:
     cell sigma = mean |base256 - nearest-up(base16)| per 16x16 cell,
@@ -94,7 +131,13 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
 
     pal = seed.reshape(-1, 256, 3)                    # (B, 256, 3)
     tgt = target_lab.reshape(-1, 65536, 3)
-    d2 = ((tgt[:, :, None, :] - pal[:, None, :, :]) ** 2).sum(-1)   # (B, n, 256)
+    # GEMM form of the squared distances (|t|^2 + |p|^2 - 2 t.p): same
+    # math, 3x less memory traffic than the broadcast-subtract form —
+    # measured 78 -> 64 ms/step on M3 Max. (Training is not in the
+    # bit-exact domain; the judge stays exact in numpy.)
+    d2 = ((tgt ** 2).sum(-1, keepdims=True)
+          + (pal ** 2).sum(-1)[:, None, :]
+          - 2.0 * (tgt @ pal.transpose(0, 2, 1)))     # (B, n, 256)
     # Scale-adaptive temperature: normalize by the batch's own mean d2
     # (stop-gradient), so softmax selectivity is EXPOSURE-INDEPENDENT
     # (N4 equivariance) — a fixed tau goes flat on dark scenes.
@@ -272,6 +315,8 @@ def main():
                     help='path to save final weights (.safetensors)')
     ap.add_argument('--ckpt-every', type=int, default=500,
                     help='rolling checkpoint cadence (0=off; needs --save)')
+    ap.add_argument('--workers', type=int, default=0,
+                    help='parallel scene-synthesis workers (0=inline legacy)')
     ap.add_argument('--load', type=str, default='',
                     help='warm-start weights from a .safetensors file')
     args = ap.parse_args()
@@ -313,7 +358,13 @@ def main():
                     + (args.lr - args.lr / 10)
                     * 0.5 * (1 + math.cos(math.pi * (step - 1) / args.steps)))
             opt.learning_rate = lr_t
-        xs, tl, sl, b16, b256 = synth.batch(rng, n=args.batch, side=args.side)
+        if step == 1 and args.workers > 0:
+            prefetcher = Prefetcher(args.workers, args.batch, args.side)
+        if args.workers > 0:
+            xs, tl, sl, b16, b256 = prefetcher.get()
+        else:
+            xs, tl, sl, b16, b256 = synth.batch(rng, n=args.batch,
+                                                side=args.side)
         x = mx.array(np.moveaxis(xs, 1, -1))
         t, slm = mx.array(tl), mx.array(sl)
         b16m, b256m = mx.array(b16), mx.array(b256)
@@ -375,6 +426,8 @@ def main():
         mx.save_safetensors(
             args.save, dict(mlx.utils.tree_flatten(model.parameters())))
         print(f'weights saved to {args.save}')
+    if args.workers > 0:
+        prefetcher.close()
 
 
 if __name__ == '__main__':
