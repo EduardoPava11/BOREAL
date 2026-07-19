@@ -18,6 +18,7 @@
 # ════════════════════════════════════════════════════════════════
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -26,11 +27,17 @@ import time
 
 SPARK = '▁▂▃▄▅▆▇█'
 
+# Float pattern that survives divergence: negatives, exponents, nan,
+# ±inf — the old [\d.]+ dropped eval lines exactly when a run went bad.
+FLOAT = r'(?:[-+]?(?:[\d.]+(?:e[-+]?\d+)?|nan|inf))'
+
 STEP_RE = re.compile(
-    r'step\s+(\d+)\s+loss\s+([\d.]+)\s+tau\s+([\d.]+)\s+w_seed\s+[\d.]+\s+'
-    r'chi2\s+([\d.]+)\s+homeShare\s+([\d.]+)\s+dE\s+([\d.]+)'
-    r'(?:.*?battle:\s+chi2\s+([\d.]+)\s+homeShare\s+([\d.]+)\s+'
-    r'dE\s+([\d.]+))?')
+    r'step\s+(\d+)\s+loss\s+(' + FLOAT + r')\s+tau\s+(' + FLOAT + r')\s+'
+    r'w_seed\s+' + FLOAT + r'\s+'
+    r'chi2\s+(' + FLOAT + r')\s+homeShare\s+(' + FLOAT + r')\s+'
+    r'dE\s+(' + FLOAT + r')'
+    r'(?:.*?battle:\s+chi2\s+(' + FLOAT + r')\s+homeShare\s+(' + FLOAT
+    + r')\s+dE\s+(' + FLOAT + r'))?')
 BASE_RE = re.compile(
     r'baseline (CLEAN|NOISY) classic:\s+chi2\s+([\d.]+)\s+homeShare\s+'
     r'([\d.]+)\s+dE\s+([\d.]+)(?:.*?battle:\s+chi2\s+([\d.]+)\s+'
@@ -39,6 +46,7 @@ DOM_RE = re.compile(r'dominance vs clean classic.*:\s+(\d+)/(\d+)')
 
 
 def spark(vals, width=32):
+    vals = [v for v in vals if math.isfinite(v)]     # nan/inf poison min/max
     if not vals:
         return ''
     vals = vals[-width:]
@@ -210,7 +218,8 @@ def render(target, total_steps=None):
                 rate = ((rows[-1]['elapsed'] - rows[0]['elapsed'])
                         / max(rows[-1]['step'] - rows[0]['step'], 1))
                 eta = (total - r['step']) * rate
-                prog += f'  ETA {eta / 60:.0f}m'
+                if math.isfinite(eta):               # nan rows must not crash
+                    prog += f'  ETA {eta / 60:.0f}m'
         out.append(prog)
         line = (f"latest:  loss {r['loss']:.4f}  chi2 {r['chi2']:9.1f}  "
                 f"hs {r['homeShare']:.4f}  dE {r['dE']:.4f}")

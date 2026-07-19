@@ -256,12 +256,15 @@ def probe_metrics(model, probe, with_battle=False, de_budget=0.03):
 
 
 def baseline_rows(probe, which='clean', with_battle=True, de_budget=0.03):
-    x_np, t_np, _, b16_np, _ = probe
+    x_np, t_np, sl_np, b16_np, _ = probe
     rows = []
     for b in range(len(t_np)):
         t = t_np[b].reshape(-1, 3)
         if which == 'clean':
-            seed = t_np[b].reshape(16, 16, 16, 16, 3).mean(axis=(1, 3)).reshape(256, 3)
+            # Law'd classic seed = linear-light cfaBin seed (synth's sl);
+            # the old OKLab-mean of the ceiling was a Jensen-gap bug
+            # (fixed 2026-07-18 review).
+            seed = sl_np[b].reshape(256, 3)
         else:
             seed = b16_np[b].reshape(256, 3)
         if with_battle:
@@ -308,7 +311,7 @@ def main():
     ap.add_argument('--anchor-half-life', type=int, default=0,
                     help='R3: decay the warm anchor x0.5 every N steps (0=off)')
     ap.add_argument('--cosine-lr', action='store_true')
-    ap.add_argument('--probe-scenes', type=int, default=4)
+    ap.add_argument('--probe-scenes', type=int, default=8)
     ap.add_argument('--eval-every', type=int, default=50)
     ap.add_argument('--battle-eval-every', type=int, default=200)
     ap.add_argument('--save', type=str, default='',
@@ -321,6 +324,12 @@ def main():
                     help='warm-start weights from a .safetensors file')
     args = ap.parse_args()
 
+    # Normalize --save once: without the suffix, the derived-path
+    # .replace() calls below are silent no-ops.
+    if args.save and not args.save.endswith('.safetensors'):
+        args.save += '.safetensors'
+        print(f'note: --save normalized to {args.save}')
+
     sys.stdout.reconfigure(line_buffering=True)        # live logs under nohup
     global RES_GAIN
     RES_GAIN = args.res_gain                           # read by losses/judges
@@ -331,7 +340,10 @@ def main():
         if not metrics_path:
             return
         import json
-        with open(metrics_path, 'a') as f:
+        # 'start' truncates: one run = one stream (re-runs with the
+        # same --save must not stack streams under the watcher).
+        mode = 'w' if event == 'start' else 'a'
+        with open(metrics_path, mode) as f:
             f.write(json.dumps({'event': event, **kv}) + '\n')
     rng = np.random.default_rng(17)
     probe_rng = np.random.default_rng(1234)            # HELD OUT, never trained
@@ -360,91 +372,103 @@ def main():
          config=vars(args), clean=clean_m, noisy=noisy_m,
          t0=time.time())
 
+    # Prefetcher up front (not lazily at step 1) so the finally below
+    # can always reap the pool — tripwire SystemExit / worker exceptions
+    # must not leak child processes.
+    prefetcher = (Prefetcher(args.workers, args.batch, args.side)
+                  if args.workers > 0 else None)
     t0 = time.time()
-    for step in range(1, args.steps + 1):
-        # R3 compression anneal: warm (soft, forgiving) -> sharp
-        # (near-hard assignment) geometrically across the run.
-        tau = 0.5 * (0.05 / 0.5) ** ((step - 1) / max(args.steps - 1, 1))
-        w_seed = (0.5 ** (step / args.anchor_half_life)
-                  if args.anchor_half_life > 0 else 1.0)
-        if args.cosine_lr:
-            lr_t = (args.lr / 10
-                    + (args.lr - args.lr / 10)
-                    * 0.5 * (1 + math.cos(math.pi * (step - 1) / args.steps)))
-            opt.learning_rate = lr_t
-        if step == 1 and args.workers > 0:
-            prefetcher = Prefetcher(args.workers, args.batch, args.side)
-        if args.workers > 0:
-            xs, tl, sl, b16, b256 = prefetcher.get()
-        else:
-            xs, tl, sl, b16, b256 = synth.batch(rng, n=args.batch,
-                                                side=args.side)
-        x = mx.array(np.moveaxis(xs, 1, -1))
-        t, slm = mx.array(tl), mx.array(sl)
-        b16m, b256m = mx.array(b16), mx.array(b256)
-        pw = (mx.array(sigma_weights(b16, b256))
-              if args.sigma_curriculum else None)
-        battle_on = (args.battle_every > 0
-                     and step % args.battle_every == 0
-                     and (args.battle_tau_gate <= 0.0
-                          or tau <= args.battle_tau_gate))
-        if battle_on:
-            ys = battle_targets(model, x, b16m, t, args.de_budget)
-            if args.battle_mode == 'usage':
-                counts = np.stack([
-                    np.bincount(np.array(ys[b]), minlength=256)
-                    for b in range(ys.shape[0])]).astype(np.float32)
-                ys = mx.array(counts)                    # (B, 256)
-            wb = args.w_battle
-        else:
-            ys, wb = None, 0.0
-        loss, grads = lg(model, x, t, slm, b16m, b256m, tau, w_seed, pw, ys, wb)
-        opt.update(model, grads)
-        mx.eval(model.parameters(), opt.state)
+    try:
+        for step in range(1, args.steps + 1):
+            # R3 compression anneal: warm (soft, forgiving) -> sharp
+            # (near-hard assignment) geometrically across the run.
+            tau = 0.5 * (0.05 / 0.5) ** ((step - 1) / max(args.steps - 1, 1))
+            w_seed = (0.5 ** (step / args.anchor_half_life)
+                      if args.anchor_half_life > 0 else 1.0)
+            if args.cosine_lr:
+                lr_t = (args.lr / 10
+                        + (args.lr - args.lr / 10)
+                        * 0.5 * (1 + math.cos(math.pi * (step - 1)
+                                              / args.steps)))
+                opt.learning_rate = lr_t
+            if prefetcher is not None:
+                xs, tl, sl, b16, b256 = prefetcher.get()
+            else:
+                xs, tl, sl, b16, b256 = synth.batch(rng, n=args.batch,
+                                                    side=args.side)
+            x = mx.array(np.moveaxis(xs, 1, -1))
+            t, slm = mx.array(tl), mx.array(sl)
+            b16m, b256m = mx.array(b16), mx.array(b256)
+            pw = (mx.array(sigma_weights(b16, b256))
+                  if args.sigma_curriculum else None)
+            battle_on = (args.battle_every > 0
+                         and step % args.battle_every == 0
+                         and (args.battle_tau_gate <= 0.0
+                              or tau <= args.battle_tau_gate))
+            if battle_on:
+                ys = battle_targets(model, x, b16m, t, args.de_budget)
+                if args.battle_mode == 'usage':
+                    counts = np.stack([
+                        np.bincount(np.array(ys[b]), minlength=256)
+                        for b in range(ys.shape[0])]).astype(np.float32)
+                    ys = mx.array(counts)                # (B, 256)
+                wb = args.w_battle
+            else:
+                ys, wb = None, 0.0
+            loss, grads = lg(model, x, t, slm, b16m, b256m, tau, w_seed,
+                             pw, ys, wb)
+            opt.update(model, grads)
+            mx.eval(model.parameters(), opt.state)
 
-        if step % args.eval_every == 0 or step == 1 or step == args.steps:
-            deep_eval = (step % args.battle_eval_every == 0
-                         or step == args.steps)
-            m, _ = probe_metrics(model, probe, with_battle=deep_eval,
-                                 de_budget=args.de_budget)
-            # Collapse tripwire (standing rule): 255n is total collapse.
-            if m['chi2'] > 0.9 * 255 * 65536:
-                print(f'!!! COLLAPSE TRIPWIRE: chi2 {m["chi2"]:.0f} '
-                      f'~ 255n — aborting (V1d closed form)')
-                raise SystemExit(2)
-            print(f'step {step:4d}  loss {float(loss):.5f}  tau {tau:.3f}  '
-                  f'w_seed {w_seed:.3f}  {fmt(m)}  ({time.time() - t0:.1f}s)')
-            emit('eval', step=step, loss=float(loss), tau=tau,
-                 elapsed=time.time() - t0, **m)
-        if (args.save and args.ckpt_every > 0
-                and step % args.ckpt_every == 0):
-            ck = args.save.replace('.safetensors', '.ckpt.safetensors')
+            if step % args.eval_every == 0 or step == 1 or step == args.steps:
+                deep_eval = (step % args.battle_eval_every == 0
+                             or step == args.steps)
+                m, _ = probe_metrics(model, probe, with_battle=deep_eval,
+                                     de_budget=args.de_budget)
+                # Collapse tripwire (standing rule): 255n is total collapse.
+                if m['chi2'] > 0.9 * 255 * 65536:
+                    print(f'!!! COLLAPSE TRIPWIRE: chi2 {m["chi2"]:.0f} '
+                          f'~ 255n — aborting (V1d closed form)')
+                    raise SystemExit(2)
+                print(f'step {step:4d}  loss {float(loss):.5f}  '
+                      f'tau {tau:.3f}  w_seed {w_seed:.3f}  {fmt(m)}  '
+                      f'({time.time() - t0:.1f}s)')
+                emit('eval', step=step, loss=float(loss), tau=tau,
+                     elapsed=time.time() - t0, **m)
+            if (args.save and args.ckpt_every > 0
+                    and step % args.ckpt_every == 0):
+                ck = args.save.replace('.safetensors', '.ckpt.safetensors')
+                mx.save_safetensors(
+                    ck, dict(mlx.utils.tree_flatten(model.parameters())))
+
+        # Final judgment: per-scene R4-style dominance vs CLEAN classic.
+        final_m, final_rows = probe_metrics(model, probe, with_battle=True,
+                                            de_budget=args.de_budget)
+        print('final model  :', fmt(final_m))
+        print('final classic:', fmt(clean_m))
+        # R4 gate, EQUILIBRIUM LAYER (redefined 2026-07-18): the equilibrium
+        # must be cheaper (dE_eq), closer to the band's center (chi2_eq),
+        # and the palette better arranged pre-battle (homeShare raw).
+        dom = 0
+        for mr, cr in zip(final_rows, clean_rows):
+            if (mr['dE_battle'] < cr['dE_battle']
+                    and abs(mr['chi2_battle'] - 255)
+                    < abs(cr['chi2_battle'] - 255)
+                    and mr['homeShare'] > cr['homeShare']):
+                dom += 1
+        small_probe = (' (indicative only — R4\'s 95% gate needs >=20 scenes)'
+                       if len(final_rows) < 20 else '')
+        print(f'dominance vs clean classic (equilibrium layer: dE_eq & '
+              f'band-distance_eq & homeShare_raw): '
+              f'{dom}/{len(final_rows)} scenes{small_probe}')
+        emit('final', dominance=dom, scenes=len(final_rows), **final_m)
+        if args.save:
             mx.save_safetensors(
-                ck, dict(mlx.utils.tree_flatten(model.parameters())))
-
-    # Final judgment: per-scene R4-style dominance vs CLEAN classic.
-    final_m, final_rows = probe_metrics(model, probe, with_battle=True,
-                                        de_budget=args.de_budget)
-    print('final model  :', fmt(final_m))
-    print('final classic:', fmt(clean_m))
-    # R4 gate, EQUILIBRIUM LAYER (redefined 2026-07-18): the equilibrium
-    # must be cheaper (dE_eq), closer to the band's center (chi2_eq),
-    # and the palette better arranged pre-battle (homeShare raw).
-    dom = 0
-    for mr, cr in zip(final_rows, clean_rows):
-        if (mr['dE_battle'] < cr['dE_battle']
-                and abs(mr['chi2_battle'] - 255) < abs(cr['chi2_battle'] - 255)
-                and mr['homeShare'] > cr['homeShare']):
-            dom += 1
-    print(f'dominance vs clean classic (equilibrium layer: dE_eq & '
-          f'band-distance_eq & homeShare_raw): {dom}/{len(final_rows)} scenes')
-    emit('final', dominance=dom, scenes=len(final_rows), **final_m)
-    if args.save:
-        mx.save_safetensors(
-            args.save, dict(mlx.utils.tree_flatten(model.parameters())))
-        print(f'weights saved to {args.save}')
-    if args.workers > 0:
-        prefetcher.close()
+                args.save, dict(mlx.utils.tree_flatten(model.parameters())))
+            print(f'weights saved to {args.save}')
+    finally:
+        if prefetcher is not None:
+            prefetcher.close()
 
 
 if __name__ == '__main__':

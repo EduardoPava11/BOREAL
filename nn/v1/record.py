@@ -19,6 +19,8 @@
 # ════════════════════════════════════════════════════════════════
 
 import json
+import sys
+
 import numpy as np
 import pipeline as P
 import synth as S
@@ -107,10 +109,17 @@ def synth_record(rng, side=512, photons_at_1=4000.0):
 # ── Device leg: load a report bundle ──────────────────────────────────────
 
 def load_device_record(report_json_path):
-    """report.json -> the same record dict, or None if pre-N0 bundle."""
+    """report.json -> the same record dict, or None if pre-N0 bundle.
+
+    Refusals are NAMED on stderr (a silent None hid pre-N0 bundles);
+    the return contract (None) is unchanged."""
     with open(report_json_path) as f:
         r = json.load(f)
     if "fractal" not in r or "deltas" not in r:
+        missing = [k for k in ("fractal", "deltas") if k not in r]
+        print(f'REFUSED {report_json_path}: pre-N0 bundle '
+              f'(no {"/".join(repr(k) for k in missing)} section) — '
+              f're-capture with the current build', file=sys.stderr)
         return None                                          # pre-N0 bundle
     return {"fractal": r["fractal"], "deltas": r["deltas"], "ev": r["ev"]}
 
