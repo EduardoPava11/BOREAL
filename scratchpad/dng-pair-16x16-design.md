@@ -1,5 +1,12 @@
 # DNG-Pair → 16×16×8 Hylomorphic HDR — Lead-Architect Design & Build Plan
 
+> HISTORICAL (banner added 2026-07-18): this plan prescribes a Zig
+> implementation against a tree that was deleted (M5, 1cf045c) and an
+> HDR product that was retired (GIF-ISP refocus). Never build from
+> this doc. Kept for the design reasoning (kill-shot table, pooling
+> math); its sensor dims (4224) are the PRE-CROP raster, not the
+> decoded mosaic (4032×3024, device-verified).
+
 Status: PLANNING ONLY (no code). Date: 2026-06-27.
 Supersedes nothing; this is the reconciled design after three competing drafts were vetted adversarially.
 Scope: turn a 2-frame EV bracket of iPhone Bayer-RAW DNGs into one `16×16×8` scene-linear HDR **model tile** (+ a `16×16×3` EDR thumbnail for sanity only). This is a **training/interchange artifact**, not a viewable photo.

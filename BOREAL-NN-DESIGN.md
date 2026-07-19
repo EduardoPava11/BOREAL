@@ -1,5 +1,15 @@
 # BOREAL NN Design — the multi-scale H-JEPA demosaicer
 
+> PARTIALLY SUPERSEDED (banner added 2026-07-18): the ONE-network
+> framing below is the historical seed of the FOUR-NET architecture
+> (L-net, a-net, b-net, Composer) — current model source of truth is
+> `BOREAL-COREAI-TRAINING-WORKFLOW.md`, execution loop is
+> `BOREAL-COREAI-CIRCUIT-WORKFLOW.md`. The contracts named here
+> (CycleSet N laws, MS + B laws, Binomial V1) remain LAW. The ship
+> gates in §7 are REVISED IN PLACE per the 2026-07-18 decrees (no A/B
+> surface; quality over cadence) and the equilibrium-gate
+> redefinition — read §7 as amended, not the git history.
+
 Status 2026-07-17: designed; V1 SCOPED (below). Input contract is LAW
 (CycleSet N1-N5); output contract is LAW (MS + B laws); the V1 objective
 is LAW (Binomial V1a-V1e); runtime research done (Core AI, WWDC26
@@ -158,13 +168,24 @@ stability is expected but will be measured, not assumed.
 
 ## 7. Gates before the NN touches the product path
 
+(G-d and G-e REVISED 2026-07-18 per the decrees: no A/B surface,
+quality over cadence. G-b is superseded as a SHIP gate by the
+equilibrium-layer judge — see the regimen doc — and remains a
+per-rung diagnostic only.)
+
   G-a  trainer loader == cycleset_golden.json (parity)
-  G-b  >= +1 dB over CFA-bin per rung, OKLab dE, held-out real bundles
+  G-b  (diagnostic, not a ship gate) >= +1 dB over CFA-bin per rung,
+       OKLab dE, held-out real bundles; the SHIP gate is the
+       equilibrium-layer dominance test (regimen R4)
   G-c  bell projection delta small (median |L shift| under a stratum
        width) — the net PROPOSES lawful seeds, projection only trims
-  G-d  on-device: warm per-frame latency < the 50 ms cycle budget slice;
-       cold-start specialization measured and cached
-  G-e  A/B in the preview: NN rungs vs classic rungs, same capture
+  G-d  on-device: composition COMPLETES and its latency is RECORDED
+       as C0 telemetry in the bundle (quality over cadence — there
+       is NO latency budget); cold-start specialization measured
+       and cached
+  G-e  model-vs-classic judged in DATA: the bundle carries both
+       paths' metrics per capture and the Mac-side judge compares
+       (NO A/B surface in the app — the surface shows THE GIF)
 
 ## 8. Open items (resolve in the Xcode 27 SDK / beta)
 

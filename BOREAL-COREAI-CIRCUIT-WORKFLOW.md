@@ -78,13 +78,19 @@ bundle carries both paths' numbers.
 
 ### A3 — The corpus valve (device -> Mac)
 
-- Every burst auto-emits the report bundle (fractal records + EV trace
-  + binomial/homeShare readouts = recorded classic baselines).
+- TO BUILD (gap G6, registered 2026-07-18): every burst auto-emits
+  the report bundle (fractal records + EV trace + binomial/homeShare
+  readouts = recorded classic baselines). TODAY only the single-cycle
+  path (shutter/Import -> CycleReport.build) writes a bundle; the
+  64-burst writes none — its exit gate below is therefore unmet by
+  construction until this lands.
 - Transport: AirDrop now (manual, works today); iCloud drive folder
   when volume justifies it (D8, Daniel).
 - Mac ingest: record.py validates (one schema, synth == device);
-  invalid/pre-N0 bundles are named and refused, never silently
-  dropped.
+  invalid/pre-N0 bundles are named and refused to stderr, never
+  silently dropped (landed 2026-07-18). TO BUILD: the wiring that
+  feeds accepted bundles into train.py's data mix (the R5 leg) —
+  today real bundles are loaded by hand.
 
 Exit gate A3: a bundle captured today trains tomorrow's run with zero
 hand-editing; the loader's refusal messages are the only manual step.
@@ -110,10 +116,12 @@ discipline that five controlled runs (2026-07-18) proved necessary.
 ### B2 — The capacity ladder (the live axis)
 
 - All loss-shaping variants plateaued at dE ~0.0104 => the regime is
-  capacity/data-bound. Ladder: d=24 (52k) -> d=48 (169k, in flight)
+  capacity/data-bound. Ladder: d=24 (52k) -> d=48 (169k; 10k run
+  PAUSED ~step 4500 by Daniel 2026-07-18, ckpt in nn/v1/runs/,
+  resume via --load)
   -> d=96 IF AND ONLY IF the d=48 10k run moves the plateau; then
   depth (stem 3-conv) before width beyond 96. RES_GAIN is the second
-  rung of the same axis (0.1 -> 0.3 in flight; learned gain only if
+  rung of the same axis (0.1 -> 0.3 in the paused run; learned gain only if
   static gains plateau).
 - Promotion rule: a rung is promoted only on the equilibrium-layer
   gate vs the SAME held-out probe (never against a moving target).
@@ -161,8 +169,10 @@ discipline that five controlled runs (2026-07-18) proved necessary.
 - Parity smoke at the mirror: the cycleset golden pushed through the
   PyTorch mirror must match the MLX forward within fp tolerance
   BEFORE export (the G-a idea, applied to the bridge).
-- A refreshed .aimodel that loses the on-device A/B does not ship —
-  the archive keeps the incumbent (B5 selection handles regression).
+- A refreshed .aimodel that loses to the incumbent on the MAC-SIDE
+  judge (bundle-recorded both-path metrics — no on-device A/B, per
+  the decree) does not ship; the archive keeps the incumbent (B5
+  selection handles regression).
 
 ---
 
@@ -170,7 +180,9 @@ discipline that five controlled runs (2026-07-18) proved necessary.
 
   1. (Daniel) ONE device re-capture -> first real fractal bundle
      (unblocks A1's exit gate, B3's real leg, B4's device judge).
-  2. d=48/RES_GAIN-0.3 10k verdict (in flight) -> B2 ladder decision.
+  2. d=48/RES_GAIN-0.3 10k verdict (run PAUSED ~step 4500; resume
+     from nn/v1/runs/v1h_d48_10k.ckpt.safetensors) -> B2 ladder
+     decision.
   3. C0 logbook telemetry (capture->encode trace in bundles) — the
      circuit's flight recorder.
   4. A2 submit path behind the Xcode 27 beta (SDK questions). Gap

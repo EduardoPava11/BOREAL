@@ -59,7 +59,9 @@ numbers we never measured arrive as a side effect.
 - Corpus growth: the app auto-saves a report bundle per burst (C4),
   every capture becomes R5 training data with its baseline attached.
 - Ship: V1 seed replaces the classic seed BEHIND the classic fallback
-  (gates G-b..G-e; determinism policy unchanged — the exact substrate
+  (gates G-b..G-e AS REVISED 2026-07-18 in BOREAL-NN-DESIGN.md §7 —
+  no A/B surface, no latency budget, equilibrium-layer ship gate;
+  determinism policy unchanged — the exact substrate
   quantizes/projects/indexes/encodes).
 
 ## C2 — Cube laws (lift k=2 -> k=3; spec-first as always)

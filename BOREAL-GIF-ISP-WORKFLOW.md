@@ -25,9 +25,11 @@ simulator-testability lever.
 >   G1 Phase 1 — sigma heat overlay toggle never built (sigma is
 >      computed and written to report.json only; no UI renders it).
 >   G2 Phase 1 — the 64-burst bypasses the preview surface entirely
->      (share-only GIF from BurstController; the in-app preview never
->      animates a burst, so the acceptance surface can't show the
->      flagship product).
+>      (share-only GIF from BurstController). PARTIALLY CLOSED
+>      2026-07-18: the single-cycle GIF now ANIMATES in the preview
+>      (Report carries frameIndices; the hero cycles the 4 frames at
+>      5 cs through the product decode — no second rendering path);
+>      the burst still doesn't route into the preview.
 >   G3 Phase 4 — LCT-per-cycle behind a flag never built (D1's GCT
 >      default is hardcoded).
 >   G4 Phase 4 — the round-trip exit law (decode-with-system-decoder ==
@@ -36,6 +38,12 @@ simulator-testability lever.
 >   G5 Test program — BOREALTests target still absent; root
 >      `make test-xcode` runs xcodebuild test against a project with no
 >      test target.
+>   G6 Circuit A3 — the 64-burst emits NO report bundle (only the
+>      single-cycle path writes one); registered 2026-07-18, blocks
+>      the corpus valve and the Mac-side model-vs-classic judge.
+>   G7 Gate coverage — the EvPlan mapping laws (P1-P4) have no
+>      emitted fixture; SceneKernel's ETTR planner is gated only by
+>      its ported self-test (registered 2026-07-18).
 > CLOSED 2026-07-18: the geometry contract now carries the
 > DEVICE-VERIFIED facts (decoded mosaic 4032x3024 — NOT the 4224
 > pre-crop tile raster — BGGR, black 528, white 4095, 12-bit; c386663)
@@ -188,7 +196,10 @@ before cutover. Never propose Zig for BOREAL again.
 > `BOREAL-COREAI-TRAINING-WORKFLOW.md` (N0 done, N1 open), governed by
 > `BOREAL-TRAINING-REGIMEN-WORKFLOW.md` and gated by
 > `BOREAL-TILING-INVESTIGATIONS.md` (I0-I8, still OPEN). The bell
-> requirement below (B1-B4) and the per-rung +1 dB gate remain canon;
+> requirement below (B1-B4) remains canon; the per-rung +1 dB dE
+> check remains as a DIAGNOSTIC only — the SHIP gate is the
+> equilibrium-layer dominance test (redefined 2026-07-18; see the
+> regimen doc's "equilibrium judge" section);
 > the one-network framing below is kept as the historical seed of that
 > design.
 
@@ -212,8 +223,9 @@ LAWFUL TARGET: the learned seed is admissible only if its L histogram is
 the bell — the projection that closes the "real scenes aren't lawful"
 gap.
 
-- Per-rung gate unchanged: >= +1 dB over the rung's CFA-bin baseline in
-  OKLab dE. Bias-free nets (exact exposure equivariance composes with
+- Per-rung >= +1 dB over the rung's CFA-bin baseline in OKLab dE —
+  now a DIAGNOSTIC, not the ship gate (superseded 2026-07-18 by the
+  equilibrium-layer judge; see the regimen doc). Bias-free nets (exact exposure equivariance composes with
   Phase 2's per-frame normalization).
 - MLX on Mac; data = LAB-report bundles (real photons, replayable) +
   synthetic mosaicked OKLab gradients with bell-lawful ground truth.

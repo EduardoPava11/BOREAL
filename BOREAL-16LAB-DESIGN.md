@@ -4,8 +4,9 @@
 > + LUT product is RETIRED (technical debt; archive per Phase 0). The ISP is
 > custom because it **demosaics at every scale**; the product is **64 frames
 > of 256x256** GIF; the 4-frame cycle with per-cycle EV recalculation is the
-> first analysis focus; Swift SIMT/Metal vs Zig is under evaluation for the
-> hot path. Execution plan: `BOREAL-GIF-ISP-WORKFLOW.md` (Phases 0-6).
+> first analysis focus; the kernel core is PURE SWIFT + METAL (Phase 5
+> complete — the Zig tree is deleted, M5/1cf045c; never propose Zig).
+> Execution plan: `BOREAL-GIF-ISP-WORKFLOW.md` (Phases 0-6).
 > Sections below describing L2 as demosaic-then-box predate the refocus and
 > are superseded by Phase 3 (multi-scale residual pyramid, MS laws).
 
@@ -37,7 +38,7 @@ format still open. Layers 5-6 designed, not started.
                  └──────────────┬───────────────────────────────────────┘
                                 │ CVPixelBuffer ring (6 deep, ~150 MB), no DNG
                  ┌──────────────▼───────────────────────────────────────┐
-                 │ L2 CLASSIC REDUCTION (per cycle, Zig)                │
+                 │ L2 CLASSIC REDUCTION (per cycle, Swift kernels)      │
                  │  crop 2048² -> fuse(4) -> demosaic -> cam_to_pp      │
                  │  -> linear box 2048²->256² -> OKLab Q16 -> pyramid   │
                  └──────────────┬───────────────────────────────────────┘
@@ -63,13 +64,13 @@ Single-source discipline: pure kernels live in `spec/Boreal/*.hs`; the law
 files AND the golden emitter import the same modules, so spec and fixtures
 cannot drift. Chain per algorithm:
 
-1. `spec/` law file proves the algebraic laws (runghc, `make test`, 5 files
-   / 24 laws green).
-2. `spec/emit/EmitGoldens.hs` writes `zig/borealkernel/fixtures/*.json`.
+1. `spec/` law file proves the algebraic laws (runghc, `make test`).
+2. `spec/emit/EmitGoldens.hs` writes repo-root `fixtures/*.json`.
 3. `spec/oracle/validate_goldens.py` re-derives everything FROM THE WRITTEN
    CONVENTIONS (not the Haskell source) and asserts agreement.
-4. `tests/*_fixtures.zig` assert the Zig port agrees; run with
-   `-Drequire_fixtures=true` so absence fails instead of skipping.
+4. `spec/verify-swift` compiles the app's actual `BOREAL/Kernels/*.swift`
+   against the SAME fixtures, bit/byte-exact (post-M5 the Swift port IS
+   the product kernel — the old Zig fixture leg died with the tree).
 
 Exactness domains (deliberate, per data type):
 - integers (pyramid, Q16): BIT-EXACT everywhere.
@@ -261,7 +262,6 @@ void        bk_oklab_q16_from_prophoto(const f32 *rgb, size_t n_px, i32 *out)   
 ## Gate commands
 
 ```
-make -C spec gate                                  # laws + emit + oracle
-cd zig/borealkernel && zig build test -Drequire_fixtures=true
-make build                                         # sim app link check
+make -C spec gate     # laws + emit + oracle + swift-verify (+ G-a leg)
+make build            # sim app link check
 ```

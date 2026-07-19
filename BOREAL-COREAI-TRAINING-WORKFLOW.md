@@ -171,7 +171,9 @@ PREDICTS (gradients, Mac), the laws judge. Three tiers:
 
 Where this session left the program (commits 0389f82 -> d8c95c8;
 gate 16 law files / 87 laws + oracle + Swift harness green; sim
-build green; tree clean):
+build green; tree clean) [count note 2026-07-18: the S-transform
+pyramid law file was retired from the gate later the same day —
+CORE is now 15 law files]:
 
   DONE
   - N0: the app emits the fractal training record. FractalKernel

@@ -1,13 +1,16 @@
 # BOREAL — Setup
 
-> SUPERSEDED (banner added 2026-07-18): the mission described below —
-> `.bcube` bundles + the Looks Lab k-means editor — is TWO product
-> identities old (superseded by the RGBT-HDR pivot 2026-06-16, which was
-> itself retired by the GIF-ISP refocus 2026-07-17). Current product:
-> capture -> GIF per `BOREAL-GIF-ISP-WORKFLOW.md`; current model program:
-> `BOREAL-COREAI-TRAINING-WORKFLOW.md`. The Zig core is gone (pure
-> Swift + Metal since M5). Tooling notes below (xcodegen, sim build,
-> signing) largely still apply; the pipeline description does not.
+> SUPERSEDED IN PART (banner updated 2026-07-18): the mission described
+> in the Architecture/Layout sections below — `.bcube` bundles + the
+> Looks Lab k-means editor — is TWO product identities old (superseded
+> by the RGBT-HDR pivot 2026-06-16, itself retired by the GIF-ISP
+> refocus 2026-07-17). Current product: capture -> GIF per
+> `BOREAL-GIF-ISP-WORKFLOW.md`; current model program:
+> `BOREAL-COREAI-TRAINING-WORKFLOW.md`. The Zig core is GONE (pure
+> Swift + Metal since M5, 1cf045c). The Prerequisites/Building/Testing/
+> Editing sections below were REWRITTEN 2026-07-18 to current reality
+> and can be followed as-is; the Architecture paragraph and Layout tree
+> are HISTORICAL and describe an app that no longer exists.
 
 iOS 26+ app. Captures 16 sets × 4 RAW DNGs (= 64 frames) on iPhone, processes each set's quartet into a per-bin LAB statistical tensor, bundles the session into a single `.bcube` file. The Looks Lab editor re-quantizes that `.bcube` into a 64-frame GIF using PCA-seeded Lloyd-Max k-means under a weighted Mahalanobis distance — every UI control is a slider weight on a pure mathematical primitive (σ, cov, ρ, χ², ‖Δ‖) from the bcube.
 
@@ -17,9 +20,8 @@ iOS 26+ app. Captures 16 sets × 4 RAW DNGs (= 64 frames) on iPhone, processes e
 |---|---|---|
 | Xcode | 26.2+ (iOS 26 SDK + iPhone 17 Pro simulator) | from the App Store |
 | xcodegen | 2.44+ | `brew install xcodegen` |
-| zig | 0.16.0+ | `brew install zig` |
-
-> The pre-build script auto-detects zig via `command -v zig`. If you installed zig somewhere unusual, set `ZIG_PATH=/path/to/zig` before any build.
+| GHC/runghc | via ghcup (spec laws + golden emitter) | see `spec/` |
+| python3 + numpy | oracle + trainer parity leg | `pip3 install numpy` |
 
 ## One-command bootstrap
 
@@ -27,7 +29,8 @@ iOS 26+ app. Captures 16 sets × 4 RAW DNGs (= 64 frames) on iPhone, processes e
 make setup
 ```
 
-Verifies the two CLI tools are installed and regenerates `BOREAL.xcodeproj` from `project.yml`. Run this after a fresh clone or any `project.yml` edit.
+Verifies xcodegen is installed and regenerates `BOREAL.xcodeproj` from
+`project.yml`. Run this after a fresh clone or any `project.yml` edit.
 
 ## Building
 
@@ -36,33 +39,32 @@ make build         # Debug simulator build (no signing)
 make device        # Release build for generic iOS device
 ```
 
-The first build does a cold Zig compile (~5 s for the static library); subsequent builds skip the Zig pre-build phase entirely if no `.zig` files changed.
+The kernel core is pure Swift (`BOREAL/Kernels/`, `enum BorealKernels`)
+— there is no pre-build step.
 
 ## Testing
 
 ```sh
-make test          # both Zig (72) and Swift (124+) suites
-make test-zig      # just the Zig kernel
-make test-xcode    # just the Swift app
+make test          # spec gate (laws + goldens + oracle + Swift kernel
+                   # parity) then xcodebuild test
+make test-spec     # just the four-leg spec gate (make -C spec gate)
+make test-xcode    # xcodebuild test (NOTE: no test target yet — gap G5)
 ```
-
-The Zig tests exercise the per-bin statistical primitives (`binomial.zig`). The Swift tests exercise the format layers (`.bvox` v4 + `.bcube` v2) and the editor pipeline (`QuantizationEngine`, `PaletteEditor`, `ReRollEngine`).
 
 ## Cleaning
 
 ```sh
-make clean         # wipes zig-out/, .zig-cache/, and Xcode DerivedData
+make clean         # wipes spec/_build and Xcode DerivedData
 ```
 
 ## Editing
 
 | You edited… | Then run… | Why |
 |---|---|---|
-| any `.swift` file in `BOREAL/` | `make build` | Xcode skips the Zig phase automatically |
-| any `.zig` file in `zig/borealkernel/` | `make build` | Xcode re-runs `scripts/build-zig.sh` |
-| `project.yml` | `make setup` | xcodegen has to regenerate the .xcodeproj |
-| `BorealKernel.h` (the C bridging header) | `make build` | Swift sees changes on the next compile |
-| `scripts/zig-source-inputs.xcfilelist` | `make setup` | only when adding/removing `.zig` files |
+| any `.swift` file in `BOREAL/` | `make build` | plus `make test-spec` if it was a `Kernels/` file (the gate compiles them) |
+| any `spec/Boreal/*.hs` kernel module | `make test-spec` | laws re-check, goldens re-emit, oracle + Swift re-verify |
+| `project.yml` or adding a file under `BOREAL/` | `make setup` | xcodegen must regenerate the .xcodeproj (known gotcha) |
+| `nn/v1/pipeline.py` | `python3 nn/v1/goldens_test.py` | G-a: trainer parity vs the same goldens |
 
 ## Architecture overview (one paragraph)
 
