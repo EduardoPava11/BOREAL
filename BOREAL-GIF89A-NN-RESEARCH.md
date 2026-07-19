@@ -201,6 +201,14 @@ dVAE schedule is the only published mitigation pattern.)
       the sampler form of the sigma curriculum that lost as a loss).
   E5  Capacity to Gharbi-class ~500k ONLY if E1-E4 leave the plateau
       (field norms license it; shipping norms don't demand it).
+      [VERDICT 2026-07-19: RAN — d=96/597k @ 20k = NEW CHAMPION
+      19,603/0.334/0.0081, and chi^2_eq 1,162 BEATS the clean
+      oracle's 1,258 — the first oracle-beating column, on the gate
+      layer; the d=24 same-horizon control (21,854/0.327/0.0083, eq
+      1,903) attributes the equilibrium-layer win to CAPACITY.
+      E1 also RAN (won, champion recipe); E2 dead (per-scene
+      translation fails); E3 weakly negative; E4 flat. Ledger detail
+      in the training memory + commits c5f7c9a..a65abda.]
   E6  Spec-side: D1 redefined as global table + per-frame reuse-flag
       subsets (SCC pattern) — a law + wire extension decision for
       Daniel; churn gate as a temporal-spectrum (blue-in-time) law.
@@ -219,6 +227,61 @@ dVAE schedule is the only published mitigation pattern.)
      coherent index streams, BA5 deltas, churn-spectrum gating.
   4. The mid-anneal chi^2 hump: measured, mechanistically explained
      (softmax mass concentration at mid-tau), undocumented anywhere.
+
+## 8. Architecture proposals (2026-07-18, evidence-cited; Daniel decides)
+
+Ordered by evidence strength x cost. Each notes which laws it touches
+(spec-first discipline: anything touching a law is spec change FIRST).
+
+  A1  PER-FRAME ARBITRATION HEAD (KPN-lite). Replace the 1x1 temporal
+      fuse with per-pixel softmax weights over the 4 EV-normalized
+      frames (features -> 4 logits -> weighted sum). The burst-fusion
+      consensus (Kalantari SIG17 / KPN / AHDRNet): let attention
+      arbitrate saturation/noise per pixel instead of a fixed linear
+      mix. Bias-free-compatible (softmax of scale-equivariant logits).
+      ~+8k params. Touches no laws. HIGHEST VALUE/COST — the 4-frame
+      EV cycle is our whole data advantage and the current fuse
+      treats it as one 1x1 conv.
+  A2  PREDICT-THE-OPERATOR SEED HEAD (KPN/DynamicISP pattern). The
+      palette head emits per-cell COEFFICIENTS of a deterministic op
+      on the classic cell statistics (per-cell gain + chroma rotation
+      applied to the classic seed) instead of raw OKLab residuals.
+      Deepens the residual-to-classic anchor the literature validated
+      (ColorCNN+); exposure equivariance holds by construction.
+      ~+2k params. Touches no laws.
+  A3  NOISE INPUT (NIB, ICCV 2021). One noise plane appended to the
+      cycle tensor (16 -> 17ch) so the net CAN dither flat regions —
+      a CNN cannot break flat-in/flat-out symmetry without a noise
+      source; our sky gradients are the failure case. ~+0.5k params.
+      Touches the N-law input contract's CHANNEL COUNT — spec first
+      (N1' with a 17th conventions-pinned noise plane) or inject
+      post-stem (no law touched; weaker but free).
+  A4  RECEPTIVE FIELD BEFORE DEPTH (JD3Net lesson). Two dilated 3x3
+      convs at the 32x32 stage of the ladder (dilation 2/4) instead
+      of width growth — the 16x16 cell latent currently sees ~31px
+      of a 512px mosaic; palette decisions are global-statistics
+      decisions. ~+40k params at d=24. Touches no laws.
+  A5  KOHONEN-EMA PALETTE (E2's architecture form). The palette
+      becomes an EMA codebook updated by the SOM rule from cell
+      latents (Kohonen-VAE, ICANN 2024), bell-projected after every
+      update; the conv palette head demotes to initializer. Gives
+      L1-L3 locality via the update rule, freeing the loss budget.
+      Interacts with B laws (projection after EMA — order pinned in
+      spec first) and the SOM-vs-band chi^2 bias (budget the band).
+  A6  ERROR-FIELD HEAD (DitherNet analog). A third head predicting
+      the per-pixel error image added before projection at TRAIN
+      time; the product walk stays exact law. Enables E3's walk-
+      statistics losses (anisotropy penalty). ~+15k params. Touches
+      no product laws (train-side only).
+  A7  LOOKUP GEOMETRY (ViT-VQGAN lesson — 96% vs 4% is geometry).
+      Train-side experiment: normalized/reweighted OKLab axes for the
+      soft-projection distance. The PRODUCT distance is G-law Q16
+      argmin — if the experiment wins decisively, changing the wire
+      metric is a G-law spec decision (Daniel), not a trainer flag.
+  A8  CAPACITY HOLDS at d=24/52k until E1-E4 verdicts; then Gharbi-
+      class ~500k (field-licensed), width AFTER A1/A4's architectural
+      moves — the literature's answer at small capacity is shape,
+      not size.
 
 Full citations with PV/SEC tags live in the four agent reports
 (session 2026-07-18); the load-bearing ones are inlined above.
