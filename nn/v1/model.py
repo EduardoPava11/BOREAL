@@ -27,24 +27,52 @@ def conv(cin, cout, k=3, stride=1, groups=1):
 
 class SeedEncoder(nn.Module):
     """(B, 2S, 2S, 16) -> (B, 16, 16, d). For the training shape
-    2S = 256 the ladder is 4 stride-2 halvings; deeper inputs add more."""
+    2S = 256 the ladder is 4 stride-2 halvings; deeper inputs add more.
 
-    def __init__(self, d=24, in_side=256):
+    A1 (research doc §8, burst-fusion consensus — Kalantari/KPN/
+    AHDRNet): with arbitrate=True the temporal fuse becomes per-pixel
+    ATTENTION over the 4 EV-normalized frames — each frame's features
+    emit a logit (grouped 1x1), logits are scale-normalized
+    (stop-gradient) so the softmax stays exposure-INVARIANT (N4: a
+    plain softmax sharpens under input scaling and would break the
+    net's 1-homogeneity), and the frame features are weighted-summed
+    before the ladder. The fixed 1x1 mix treated the cycle's whole
+    data advantage as one linear blend."""
+
+    def __init__(self, d=24, in_side=256, arbitrate=False):
         super().__init__()
         # Stem width follows d (capacity bump 2026-07-18): 2d per-frame
         # features before temporal fusion. d=24 -> 48-wide stem (legacy
         # was 32); d=48 -> 96-wide.
         self.stem = conv(16, 2 * d, groups=4)       # per-frame subnets
+        self.arbitrate = arbitrate
+        if arbitrate:
+            # One logit per frame from that frame's OWN features
+            # (groups=4). A1b form (A1a's weighted SUM confounded
+            # arbitration with a 4x width bottleneck and lost): the
+            # weights SCALE the per-frame blocks, which stay
+            # concatenated — a strict superset of the plain 1x1 mix
+            # (uniform weights ~ recover it), same fuse width.
+            self.arb = conv(2 * d, 4, k=1, groups=4)
         self.fuse = conv(2 * d, d, k=1)             # temporal fusion
         n_down = {256: 4, 512: 5, 1024: 6}[in_side]
         self.ladder = [conv(d, d, stride=2) for _ in range(n_down)]
 
     def __call__(self, x):
-        x = nn.leaky_relu(self.stem(x), 1 / 16)
-        x = self.fuse(x)
+        h = nn.leaky_relu(self.stem(x), 1 / 16)
+        if self.arbitrate:
+            z = self.arb(h)                          # (B,H,W,4) frame logits
+            scale = mx.stop_gradient(
+                mx.mean(mx.abs(z), axis=-1, keepdims=True)) + 1e-8
+            w = mx.softmax(z / scale, axis=-1)       # exposure-invariant
+            b, hh, ww, c = h.shape
+            hf = h.reshape(b, hh, ww, 4, c // 4)     # per-frame blocks
+            hf = (4.0 * w)[..., None] * hf           # scale, keep width
+            h = hf.reshape(b, hh, ww, c)             # (B,H,W,2d)
+        h = self.fuse(h)
         for lay in self.ladder:
-            x = nn.leaky_relu(lay(x), 1 / 16)
-        return x                                     # (B, 16, 16, d)
+            h = nn.leaky_relu(lay(h), 1 / 16)
+        return h                                     # (B, 16, 16, d)
 
 
 class PatchPredictor(nn.Module):
@@ -70,9 +98,9 @@ class PatchPredictor(nn.Module):
 
 
 class V1H(nn.Module):
-    def __init__(self, d=24, in_side=256):
+    def __init__(self, d=24, in_side=256, arbitrate=False):
         super().__init__()
-        self.encoder = SeedEncoder(d, in_side)
+        self.encoder = SeedEncoder(d, in_side, arbitrate=arbitrate)
         self.palette = conv(d, 3, k=1)               # the seed proposal
         self.patches = PatchPredictor(d)
 

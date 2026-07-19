@@ -297,6 +297,9 @@ def main():
                     help='latent width (stem = 2d; capacity axis)')
     ap.add_argument('--res-gain', type=float, default=0.1,
                     help='residual scale off the classic base (RES_GAIN)')
+    ap.add_argument('--arbitrate', action='store_true',
+                    help='A1: per-pixel attention over the 4 EV frames '
+                         '(exposure-invariant softmax) instead of 1x1 fuse')
     ap.add_argument('--band-chi2', action='store_true',
                     help='V1f band target for the soft chi^2 (150-400)')
     ap.add_argument('--w-chi2', type=float, default=0.01,
@@ -357,7 +360,7 @@ def main():
             f.write(json.dumps({'event': event, **kv}) + '\n')
     rng = np.random.default_rng(17)
     probe_rng = np.random.default_rng(1234)            # HELD OUT, never trained
-    model = V1H(d=args.d, in_side=args.side // 2)
+    model = V1H(d=args.d, in_side=args.side // 2, arbitrate=args.arbitrate)
     if args.load:
         model.load_weights(args.load)
         print(f'warm-started from {args.load}')
