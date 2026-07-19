@@ -45,11 +45,18 @@ G-a's device leg). Needs the ONE re-capture (standing).
 
 - Asset: ONE .aimodel, FOUR entry points (L, a, b, compose), loaded
   via AIModelCache; all four on one serialized ComputeStream.
-- Call graph per cycle (budget ~200 ms at the 4-frame cadence):
-  tensor -> NDArray -> L-net -> (a-net, b-net conditioned on frozen L
-  latents) -> Composer -> {seed latents, ceiling latents, temporal
-  deltas}. fp16 NDArray acceptable (learned path claims no
-  bit-exactness); the three SDK questions (zero-copy MTLBuffer,
+- QUALITY OVER CADENCE (Daniel's decree 2026-07-18: the ~200 ms
+  real-time budget is DROPPED). Composition is ASYNCHRONOUS to
+  capture: the capture loop's real-time duties (bracket firing, EV
+  re-planning, the exact-substrate reduction) stay classic-side and
+  NEVER wait on the model; the model takes the time quality needs
+  and the GIF surfaces when composition completes. Latency is a
+  telemetry number in the bundle (C0), not a design constraint.
+- Call graph per cycle: tensor -> NDArray -> L-net -> (a-net, b-net
+  conditioned on frozen L latents) -> Composer -> {seed latents,
+  ceiling latents, temporal deltas}. fp16 NDArray acceptable
+  (learned path claims no bit-exactness — a precision choice, not a
+  speed concession); the three SDK questions (zero-copy MTLBuffer,
   metal-package-builder, tiny-net latency) resolve in the Xcode 27
   beta — until then the classic path IS the product path.
 - The exact substrate closes the loop OUTSIDE the model: bell
@@ -176,6 +183,10 @@ discipline that five controlled runs (2026-07-18) proved necessary.
 - D8  corpus transport: AirDrop manual vs iCloud auto (default:
       AirDrop until >1 bundle/day).
 - D9  NDArray precision on device: fp16 (default) vs fp32.
-- D10 cadence: Core AI per cycle (4 frames) vs per burst (16 cycles)
-      — per cycle is the design; per burst is the fallback if the
-      200 ms budget fails on hardware.
+- D10 RESOLVED by the quality-over-cadence decree: composition is
+      asynchronous and quality-first, so granularity is chosen by
+      DATA needs, not latency — the cycle stays the analysis unit
+      (matching the training record); per-burst composition is
+      legitimate whenever the Composer wants the full temporal
+      context. No hardware-budget fallback exists because no budget
+      exists.
