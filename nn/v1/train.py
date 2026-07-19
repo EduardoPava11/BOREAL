@@ -64,6 +64,39 @@ HOME = mx.array(((_yy // 16) * 16 + _xx // 16).ravel())     # (65536,)
 
 BAND_HI = battle.BAND[1]
 
+# E2: 16x16 grid neighborhood kernel for the SOM refinement
+# (Kohonen-VAE lesson: locality via the UPDATE RULE, not a loss term).
+_gv, _gu = np.mgrid[0:16, 0:16]
+_gpos = np.stack([_gv.ravel(), _gu.ravel()], axis=1).astype(np.float64)
+_gd2 = ((_gpos[:, None, :] - _gpos[None, :, :]) ** 2).sum(-1)   # (256,256)
+
+
+def som_kernel(sigma=1.5):
+    return mx.array(np.exp(-_gd2 / (2.0 * sigma * sigma)).astype(np.float32))
+
+
+def som_refine(pal, tgt, G, iters=2, eta=0.5, tau=0.05):
+    """Per-scene differentiable SOM step: soft-assign ceiling pixels to
+    palette entries, spread assignment mass to GRID neighbors (G), move
+    each entry toward its neighborhood-weighted pixel mean, damped by
+    eta and gated by assigned mass (empty cells barely move). The
+    arrangement pressure lives in the OPERATOR — per-scene, product-
+    compatible (deterministic given seed + ceiling), no global state.
+    pal (B,256,3), tgt (B,n,3) -> refined pal."""
+    for _ in range(iters):
+        d2 = ((tgt ** 2).sum(-1, keepdims=True)
+              + (pal ** 2).sum(-1)[:, None, :]
+              - 2.0 * (tgt @ pal.transpose(0, 2, 1)))            # (B,n,256)
+        scale = mx.stop_gradient(mx.mean(d2, axis=(1, 2), keepdims=True)) + 1e-12
+        w = mx.softmax(-d2 / (tau * scale), axis=-1)             # soft BMU
+        wn = w @ G                                               # (B,n,256)
+        den = wn.sum(axis=1)[..., None]                          # (B,256,1)
+        num = wn.transpose(0, 2, 1) @ tgt                        # (B,256,3)
+        mean_k = num / (den + 1e-8)
+        gate = den / (den + 1.0)                                 # mass gate
+        pal = pal + eta * gate * (mean_k - pal)
+    return pal
+
 
 def _gen_batch(seed, n, side):
     """Worker-side batch generation (module-level for pickling). Each
@@ -117,7 +150,8 @@ def sigma_weights(b16, b256):
 
 def losses(model, x, target_lab, seed_lab, base16, base256,
            tau=0.1, w_home=0.05, w_seed=1.0, band_chi2=False,
-           pix_w=None, y_star=None, w_battle=0.0, w_chi2=0.01):
+           pix_w=None, y_star=None, w_battle=0.0, w_chi2=0.01,
+           som_G=None, som_iters=0, som_eta=0.5):
     # RESIDUAL-TO-CLASSIC (N3: the input contains the classic baseline
     # verbatim — identity is already a demosaicer). The net predicts
     # residuals; predictions START at classic-on-noisy performance.
@@ -131,6 +165,12 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
 
     pal = seed.reshape(-1, 256, 3)                    # (B, 256, 3)
     tgt = target_lab.reshape(-1, 65536, 3)
+    # E2: SOM refinement of the proposed palette (the anchor l_seed
+    # below still binds the RAW proposal; the served/judged palette
+    # is the refined one — the model learns to propose seeds the SOM
+    # step improves).
+    if som_G is not None and som_iters > 0:
+        pal = som_refine(pal, tgt, som_G, iters=som_iters, eta=som_eta)
     # GEMM form of the squared distances (|t|^2 + |p|^2 - 2 t.p): same
     # math, 3x less memory traffic than the broadcast-subtract form —
     # measured 78 -> 64 ms/step on M3 Max. (Training is not in the
@@ -160,7 +200,7 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
     else:
         l_chi2 = mx.mean(chi2_soft) / n
 
-    seed_l = mx.sort(seed.reshape(-1, 256, 3)[:, :, 0], axis=-1)
+    seed_l = mx.sort(pal[:, :, 0], axis=-1)           # the SHIPPED palette
     l_bell = mx.mean((seed_l - BELL_T[None, :]) ** 2)
 
     # R2 arrangement: each pixel's soft weight on its HOME option.
@@ -235,16 +275,27 @@ def judged(seed_lab_256x3, target_flat):
     }
 
 
-def model_seeds(model, x_np, base16_np):
+def model_seeds(model, x_np, base16_np, target_np=None,
+                som_G=None, som_iters=0, som_eta=0.5):
     s_res, _ = model(mx.array(x_np))
-    return base16_np + RES_GAIN * np.array(s_res)      # (B,16,16,3)
+    seeds = base16_np + RES_GAIN * np.array(s_res)     # (B,16,16,3)
+    if som_G is not None and som_iters > 0 and target_np is not None:
+        pal = mx.array(seeds.reshape(len(seeds), 256, 3).astype(np.float32))
+        tgt = mx.array(target_np.reshape(len(seeds), -1, 3).astype(np.float32))
+        pal = som_refine(pal, tgt, som_G, iters=som_iters, eta=som_eta)
+        mx.eval(pal)
+        seeds = np.array(pal).reshape(seeds.shape)
+    return seeds
 
 
-def probe_metrics(model, probe, with_battle=False, de_budget=0.03):
+def probe_metrics(model, probe, with_battle=False, de_budget=0.03,
+                  som_G=None, som_iters=0, som_eta=0.5):
     """Mean hard metrics over the held-out probe scenes; optionally the
     battle-refined columns (model side)."""
     x_np, t_np, _, b16_np, _ = probe
-    seeds = model_seeds(model, np.moveaxis(x_np, 1, -1), b16_np)
+    seeds = model_seeds(model, np.moveaxis(x_np, 1, -1), b16_np,
+                        target_np=t_np, som_G=som_G, som_iters=som_iters,
+                        som_eta=som_eta)
     rows = []
     for b in range(len(seeds)):
         s = seeds[b].reshape(256, 3)
@@ -297,6 +348,12 @@ def main():
                     help='latent width (stem = 2d; capacity axis)')
     ap.add_argument('--res-gain', type=float, default=0.1,
                     help='residual scale off the classic base (RES_GAIN)')
+    ap.add_argument('--som-refine', type=int, default=0,
+                    help='E2: unrolled per-scene SOM refinement iters (0=off)')
+    ap.add_argument('--som-sigma', type=float, default=1.5,
+                    help='E2: grid neighborhood sigma (cells)')
+    ap.add_argument('--som-eta', type=float, default=0.5,
+                    help='E2: SOM step damping')
     ap.add_argument('--arbitrate', action='store_true',
                     help='A1: per-pixel attention over the 4 EV frames '
                          '(exposure-invariant softmax) instead of 1x1 fuse')
@@ -370,7 +427,10 @@ def main():
         lambda m, x, t, sl, b16, b256, tau, ws, pw, ys, wb: losses(
             m, x, t, sl, b16, b256, tau=tau, w_home=args.w_home,
             w_seed=ws, band_chi2=args.band_chi2, pix_w=pw,
-            y_star=ys, w_battle=wb, w_chi2=args.w_chi2)[0])
+            y_star=ys, w_battle=wb, w_chi2=args.w_chi2,
+            som_G=som_G, som_iters=args.som_refine,
+            som_eta=args.som_eta)[0])
+    som_G = som_kernel(args.som_sigma) if args.som_refine > 0 else None
 
     def soft_hard_gap(x, t, b16m, tau):
         """E1 (Agustsson): the annealing signal is the MEASURED
@@ -476,7 +536,9 @@ def main():
                 deep_eval = (step % args.battle_eval_every == 0
                              or step == args.steps)
                 m, _ = probe_metrics(model, probe, with_battle=deep_eval,
-                                     de_budget=args.de_budget)
+                                     de_budget=args.de_budget,
+                                     som_G=som_G, som_iters=args.som_refine,
+                                     som_eta=args.som_eta)
                 # Collapse tripwire (standing rule): 255n is total collapse.
                 if m['chi2'] > 0.9 * 255 * 65536:
                     print(f'!!! COLLAPSE TRIPWIRE: chi2 {m["chi2"]:.0f} '
