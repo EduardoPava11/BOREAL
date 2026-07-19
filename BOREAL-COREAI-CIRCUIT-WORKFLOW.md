@@ -56,14 +56,18 @@ G-a's device leg). Needs the ONE re-capture (standing).
   projection (B laws) in our kernel, index decisions walk-windowed
   (DW/TG2), BA5 delta lists re-derived and round-trip-asserted, GIF
   wire byte-exact (W laws). The .aimodel proposes; the laws dispose.
-- Classic A/B standing: every Core AI cycle renders BOTH paths in the
-  Phase-1 preview (composed rungs vs classic rungs, same capture);
-  classic remains the deterministic fallback on any load/latency
-  failure — the app NEVER requires the model to produce a GIF.
+- ONE SURFACE (Daniel's decree 2026-07-18: NO A/B in the app): the
+  user captures from DNGs and sees THE GIF — never a comparison UI.
+  Classic remains the SILENT deterministic fallback on any load/
+  latency failure; which path rendered is invisible on the surface.
+  The model-vs-classic comparison lives in DATA ONLY: the report
+  bundle records both paths' metrics per capture, and the Mac-side
+  judge (B4) reads them there.
 
 Exit gate A2: one device capture -> composed 64x256^2 GIF via the
-.aimodel with classic A/B visible; kill-switch verified (asset absent
-=> classic path, no UI degradation).
+.aimodel, same single surface; kill-switch verified (asset absent =>
+classic path renders, the surface unchanged, nothing surfaced);
+bundle carries both paths' numbers.
 
 ### A3 — The corpus valve (device -> Mac)
 
@@ -128,9 +132,10 @@ discipline that five controlled runs (2026-07-18) proved necessary.
   2. The equilibrium judge — chi^2_eq / dE_eq / homeShare_raw vs
      clean classic, held-out, per-scene, 95% dominance (R4). The
      collapse tripwire (255n) aborts loudly.
-  3. The device judge — verify-device replay + on-device A/B in the
-     preview (A2): the ONLY judge that can retire the classic path,
-     and it never fully does (fallback forever).
+  3. The device judge — verify-device replay + the bundle-recorded
+     both-path metrics (A2; NO on-device A/B surface — the judgment
+     is Mac-side, on data): the ONLY judge that can retire the
+     classic path, and it never fully does (fallback forever).
 
 ### B5 — The outer loop (evolution over nets — N5, operationalized)
 
@@ -161,9 +166,9 @@ discipline that five controlled runs (2026-07-18) proved necessary.
   2. d=48/RES_GAIN-0.3 10k verdict (in flight) -> B2 ladder decision.
   3. C0 logbook telemetry (capture->encode trace in bundles) — the
      circuit's flight recorder.
-  4. A2 submit path behind the Xcode 27 beta (SDK questions); classic
-     A/B preview surface first (it's also gap G2's fix — the burst
-     must route into the preview for A/B to mean anything).
+  4. A2 submit path behind the Xcode 27 beta (SDK questions). Gap
+     G2's fix (the burst routes into the ONE preview surface) stands
+     on its own — the user sees the burst GIF; no comparison UI.
   5. B5 archive once TWO variants beat noisy-classic on the gate.
 
 ## Decision points (Daniel)

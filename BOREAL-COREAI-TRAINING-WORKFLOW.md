@@ -148,9 +148,12 @@ PREDICTS (gradients, Mac), the laws judge. Three tiers:
 - Static shapes, channels-first, conv-only (authoring guidance);
   one ComputeStream; classic path remains the deterministic
   fallback and reference forever (determinism policy unchanged).
-- On-device A/B in the preview: composed rungs vs classic rungs,
-  same capture; the three SDK questions (NDArray zero-copy,
-  metal-package-builder, tiny-net placement) answered in the beta.
+- Model-vs-classic judged in DATA, not UI (Daniel's decree
+  2026-07-18: NO A/B surface — the app captures from DNGs and shows
+  THE GIF, one surface): the report bundle records both paths'
+  metrics per capture; the Mac-side judge compares. The three SDK
+  questions (NDArray zero-copy, metal-package-builder, tiny-net
+  placement) answered in the beta.
 
 ## N5 — Evolution at the archive (the outer loop)
 
