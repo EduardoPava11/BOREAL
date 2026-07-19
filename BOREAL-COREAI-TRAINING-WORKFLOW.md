@@ -75,9 +75,13 @@ in 3), AOT-compiled, run on one ComputeStream.
   index territory (BA4 incremental chi^2), the JEPA predictor
   learning coarse→fine L latents, gradients on the predictor,
   evolution on the discrete assignments; sigma-guided curriculum.
-- GATES (all vs classic on held-out synth + bundles): dE_L < classic;
-  chi^2 in the beauty band (150-400) and closer to it than classic;
-  homeShare > classic. Collapse tripwire 255n standing.
+- GATES (all vs classic on held-out synth + bundles; REDEFINED
+  2026-07-18 at the EQUILIBRIUM LAYER — the band is a property of the
+  settled territory, not the raw argmin; judge = the pinned
+  equilibrium judge in BOREAL-TRAINING-REGIMEN-WORKFLOW.md /
+  nn/v1/battle.py): dE_eq < classic's dE_eq; chi^2_eq in the beauty
+  band (150-400) and closer to its center than classic's;
+  homeShare_raw > classic's. Collapse tripwire 255n standing.
 
 ## N2 — The chroma pair (a-net, b-net)
 

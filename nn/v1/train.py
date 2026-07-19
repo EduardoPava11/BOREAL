@@ -1,5 +1,6 @@
 # ════════════════════════════════════════════════════════════════
-# train.py — V1-H training loop (MLX, Mac).
+# train.py — V1-H training loop (MLX, Mac). N1: the L-structure
+# seed (the 16x16 debayer) under the regimen R1-R4.
 #
 # Losses (the V1 judgment, differentiable forms):
 #   L_ceiling  mse(pred ceiling LAB, classic ceiling LAB) — the
@@ -7,24 +8,34 @@
 #   L_serve    soft-assignment dE: the target ceiling soft-indexed
 #              against the PREDICTED seed (palette must serve the
 #              scene) — softmax(-d^2/tau) weighted distances
-#   L_chi2     soft chi^2 of the soft usage histogram vs B(n,1/256)
-#              (the binomial approximation, made differentiable)
+#   L_chi2     rate penalty on soft usage. Two forms:
+#                default   chi2_soft / n  (legacy: pulls to uniform)
+#                --band-chi2  relu(chi2_soft - 400) / n — the V1f
+#                CORRECTION: beauty is FIT TO THE BINOMIAL; the band
+#                (150-400) is the target, chi^2 = 0 is sterile.
 #   L_bell     sorted seed L vs the exact bell quantile targets
-#              (the projection downstream is exact; this keeps it
-#              small — gate G-c)
-#   L_home     the R2 ARRANGEMENT term: cross-entropy pulling each
-#              ceiling pixel's soft assignment toward its HOME cell
-#              (patch (v,u) -> option v*16+u). This is the H prior —
-#              the pure-H fixed point where binomial ideal and
-#              home-centering meet; small weight, evidence may
-#              overrule locally (the battle), but the palette must
-#              be spatially ARRANGED, not just distributionally right.
+#   L_home     R2 arrangement: soft mass on the HOME option
+#   L_battle   (--battle-every K) cross-entropy toward the BATTLE
+#              EQUILIBRIUM indices: every K steps the current hard
+#              assignment settles by BA4 defections under a dE
+#              budget (battle.equilibrium, raw OKLab space — same
+#              space as the soft weights) and the settled territory
+#              becomes the assignment target. Evolution proposes,
+#              gradients follow, laws judge.
 #
-# Smoke run: `python3 train.py --steps 60` prints the loss curve +
-# the EXACT (non-soft) chi^2 / homeShare / dE of the hard pipeline
-# applied to the model's outputs, via pipeline.py (the law'd ops).
+# Curriculum (--sigma-curriculum): per-pixel weights from the cell
+# sigma (|base256 - up(base16)|, the coarse-vs-fine disagreement) —
+# the debayer earns its keep where scales disagree (R2's queued
+# sigma lever).
+#
+# Standing rules enforced here: the 255n collapse tripwire aborts
+# loudly; clean AND noisy classic baselines always printed; judgment
+# is the hard law'd metrics on HELD-OUT probe scenes (rng 1234,
+# never trained on), with battle-refined columns for model and
+# classic alike (like against like).
 # ════════════════════════════════════════════════════════════════
 import argparse
+import math
 import os
 import sys
 import time
@@ -33,8 +44,10 @@ import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
+import mlx.utils
 
 sys.path.insert(0, os.path.dirname(__file__))
+import battle  # noqa: E402
 import pipeline as P  # noqa: E402
 import synth  # noqa: E402
 from model import V1H  # noqa: E402
@@ -49,16 +62,35 @@ RES_GAIN = 0.1
 _yy, _xx = np.mgrid[0:256, 0:256]
 HOME = mx.array(((_yy // 16) * 16 + _xx // 16).ravel())     # (65536,)
 
+BAND_HI = battle.BAND[1]
+
+
+def sigma_weights(b16, b256):
+    """Per-pixel curriculum weights from the coarse-vs-fine sigma:
+    cell sigma = mean |base256 - nearest-up(base16)| per 16x16 cell,
+    normalized to mean 1 per item, blended 0.5 uniform + 0.5 sigma
+    (nothing starves), clipped. Returns (B, 256, 256, 1) float32."""
+    up = np.repeat(np.repeat(b16, 16, axis=1), 16, axis=2)
+    cell = np.abs(b256 - up).mean(axis=-1)                     # (B,256,256)
+    cell = cell.reshape(-1, 16, 16, 16, 16).mean(axis=(2, 4))  # (B,16,16)
+    cell = cell / (cell.mean(axis=(1, 2), keepdims=True) + 1e-12)
+    w = 0.5 + 0.5 * np.repeat(np.repeat(cell, 16, axis=1), 16, axis=2)
+    return np.clip(w, 0.25, 4.0)[..., None].astype(np.float32)
+
 
 def losses(model, x, target_lab, seed_lab, base16, base256,
-           tau=0.1, w_home=0.05):
+           tau=0.1, w_home=0.05, w_seed=1.0, band_chi2=False,
+           pix_w=None, y_star=None, w_battle=0.0):
     # RESIDUAL-TO-CLASSIC (N3: the input contains the classic baseline
     # verbatim — identity is already a demosaicer). The net predicts
     # residuals; predictions START at classic-on-noisy performance.
     s_res, c_res = model(x)                           # (B,16,16,3) (B,256,256,3)
     seed = base16 + RES_GAIN * s_res
     ceiling = base256 + RES_GAIN * c_res
-    l_ceiling = mx.mean((ceiling - target_lab) ** 2)
+    sq = (ceiling - target_lab) ** 2
+    if pix_w is not None:
+        sq = sq * pix_w                               # sigma curriculum
+    l_ceiling = mx.mean(sq)
 
     pal = seed.reshape(-1, 256, 3)                    # (B, 256, 3)
     tgt = target_lab.reshape(-1, 65536, 3)
@@ -68,11 +100,20 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
     # (N4 equivariance) — a fixed tau goes flat on dark scenes.
     scale = mx.stop_gradient(mx.mean(d2, axis=(1, 2), keepdims=True)) + 1e-12
     w = mx.softmax(-d2 / (tau * scale), axis=-1)
-    l_serve = mx.mean((w * d2).sum(-1))
+    served = (w * d2).sum(-1)                         # (B, n)
+    if pix_w is not None:
+        served = served * pix_w.reshape(-1, 65536)
+    l_serve = mx.mean(served)
 
     usage = w.sum(axis=1)                             # (B, 256) soft counts
     n = 65536.0
-    l_chi2 = mx.mean(((usage - n / 256) ** 2).sum(-1) * 256 / n) / n
+    chi2_soft = ((usage - n / 256) ** 2).sum(-1) * 256 / n   # (B,)
+    if band_chi2:
+        # V1f: the band is the target — no penalty inside it, no pull
+        # to the sterile floor.
+        l_chi2 = mx.mean(mx.maximum(chi2_soft - BAND_HI, 0.0)) / n
+    else:
+        l_chi2 = mx.mean(chi2_soft) / n
 
     seed_l = mx.sort(seed.reshape(-1, 256, 3)[:, :, 0], axis=-1)
     l_bell = mx.mean((seed_l - BELL_T[None, :]) ** 2)
@@ -87,19 +128,52 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
     # classic seed is a lawful, competent starting point (N3).
     l_seed = mx.mean((seed - seed_lab) ** 2)
 
-    total = (l_ceiling + 1.0 * l_seed + 0.1 * l_serve
-             + 0.01 * l_chi2 + 0.1 * l_bell + w_home * l_home)
-    return total, (l_ceiling, l_seed, l_serve, l_chi2, l_bell, l_home)
+    # Battle target, two modes (2026-07-18 lesson: per-pixel CE at
+    # diffuse w is ~log256 and swamps the loss — gate it late or use
+    # the 256-dim usage form, which has no magnitude blowup):
+    #   ce     cross-entropy toward the settled per-pixel indices
+    #   usage  match soft usage to the equilibrium's usage counts
+    #          (chi^2-style normalization — same scale as l_chi2)
+    if y_star is not None and w_battle > 0.0:
+        if y_star.ndim == 2 and y_star.shape[-1] == 256:   # usage counts
+            l_battle = mx.mean(
+                ((usage - y_star) ** 2).sum(-1) * 256 / n) / n
+        else:                                              # per-pixel indices
+            w_at_star = mx.take_along_axis(
+                w, y_star[..., None], axis=-1)[..., 0]
+            l_battle = -mx.mean(mx.log(w_at_star + 1e-8))
+    else:
+        l_battle = mx.zeros(())
+
+    total = (l_ceiling + w_seed * l_seed + 0.1 * l_serve
+             + 0.01 * l_chi2 + 0.1 * l_bell + w_home * l_home
+             + w_battle * l_battle)
+    return total, (l_ceiling, l_seed, l_serve, l_chi2, l_bell, l_home, l_battle)
+
+
+def battle_targets(model, x, base16, target_lab, de_budget, alts=8):
+    """The inner loop, training side: current predicted seed (no grad)
+    -> hard argmin territory in RAW OKLab (the space the soft weights
+    live in) -> BA4 defection equilibrium -> (B, 65536) index targets."""
+    s_res, _ = model(x)
+    seeds = np.array(base16) + RES_GAIN * np.array(s_res)     # (B,16,16,3)
+    tgts = np.array(target_lab).reshape(len(seeds), -1, 3)
+    out = np.empty((len(seeds), 65536), dtype=np.int64)
+    for b, (s, t) in enumerate(zip(seeds, tgts)):
+        pal = s.reshape(256, 3).astype(np.float64)
+        t64 = t.astype(np.float64)
+        d2 = ((t64 ** 2).sum(1)[:, None] + (pal ** 2).sum(1)[None, :]
+              - 2.0 * t64 @ pal.T)
+        np.maximum(d2, 0.0, out=d2)
+        idx = np.argmin(d2, axis=1)
+        idx_eq, _ = battle.equilibrium(idx, d2, de_budget=de_budget, alts=alts)
+        out[b] = idx_eq.astype(np.int64)
+    return mx.array(out)
 
 
 def judged(seed_lab_256x3, target_flat):
-    """Bell-consistent judgment. The bell is the OUTPUT TONAL SPACE
-    (the targets are absolute — the palette's L multiset is a
-    scene-independent constant, per the T laws). So: exact rank
-    projection on the palette L, AND the induced monotone tone map
-    (sorted seed L -> bell targets, piecewise-linear = histogram
-    specification) applied to the target's L. Model and baselines
-    are judged through this SAME map — like against like."""
+    """Bell-consistent judgment (see battle.judged_battle for the
+    battle-refined variant sharing these conventions)."""
     pal = seed_lab_256x3.astype(np.float64).copy()
     src_l = np.sort(pal[:, 0], kind='stable')
     pal[:, 0] = P.bell_project_L(pal[:, 0])            # exact projection (G-c)
@@ -116,11 +190,52 @@ def judged(seed_lab_256x3, target_flat):
     }
 
 
-def hard_metrics(model, x_np, target_lab_np, base16_np):
-    """The law'd judgment: exact pipeline ops on the model's outputs."""
+def model_seeds(model, x_np, base16_np):
     s_res, _ = model(mx.array(x_np))
-    seed = base16_np[0] + RES_GAIN * np.array(s_res)[0]   # residual + base
-    return judged(seed.reshape(256, 3), target_lab_np[0].reshape(-1, 3))
+    return base16_np + RES_GAIN * np.array(s_res)      # (B,16,16,3)
+
+
+def probe_metrics(model, probe, with_battle=False, de_budget=0.03):
+    """Mean hard metrics over the held-out probe scenes; optionally the
+    battle-refined columns (model side)."""
+    x_np, t_np, _, b16_np, _ = probe
+    seeds = model_seeds(model, np.moveaxis(x_np, 1, -1), b16_np)
+    rows = []
+    for b in range(len(seeds)):
+        s = seeds[b].reshape(256, 3)
+        t = t_np[b].reshape(-1, 3)
+        if with_battle:
+            m, _ = battle.judged_battle(s, t, de_budget=de_budget)
+        else:
+            m = judged(s, t)
+        rows.append(m)
+    return {k: float(np.mean([r[k] for r in rows])) for k in rows[0]}, rows
+
+
+def baseline_rows(probe, which='clean', with_battle=True, de_budget=0.03):
+    x_np, t_np, _, b16_np, _ = probe
+    rows = []
+    for b in range(len(t_np)):
+        t = t_np[b].reshape(-1, 3)
+        if which == 'clean':
+            seed = t_np[b].reshape(16, 16, 16, 16, 3).mean(axis=(1, 3)).reshape(256, 3)
+        else:
+            seed = b16_np[b].reshape(256, 3)
+        if with_battle:
+            m, _ = battle.judged_battle(seed, t, de_budget=de_budget)
+        else:
+            m = judged(seed, t)
+        rows.append(m)
+    return {k: float(np.mean([r[k] for r in rows])) for k in rows[0]}, rows
+
+
+def fmt(m):
+    parts = [f"chi2 {m['chi2']:9.1f}  homeShare {m['homeShare']:.4f}  dE {m['dE']:.4f}"]
+    if 'chi2_battle' in m:
+        parts.append(f"| battle: chi2 {m['chi2_battle']:7.1f}  "
+                     f"homeShare {m['homeShare_battle']:.4f}  "
+                     f"dE {m['dE_battle']:.4f}  moved {m['movedShare']:.3f}")
+    return '  '.join(parts)
 
 
 def main():
@@ -130,59 +245,136 @@ def main():
     ap.add_argument('--side', type=int, default=512)
     ap.add_argument('--lr', type=float, default=1e-3)
     ap.add_argument('--w-home', type=float, default=0.05)
+    ap.add_argument('--d', type=int, default=24,
+                    help='latent width (stem = 2d; capacity axis)')
+    ap.add_argument('--res-gain', type=float, default=0.1,
+                    help='residual scale off the classic base (RES_GAIN)')
+    ap.add_argument('--band-chi2', action='store_true',
+                    help='V1f band target for the soft chi^2 (150-400)')
+    ap.add_argument('--sigma-curriculum', action='store_true',
+                    help='weight ceiling/serve by coarse-vs-fine sigma')
+    ap.add_argument('--battle-every', type=int, default=0,
+                    help='every K steps, train toward the BA4 equilibrium')
+    ap.add_argument('--w-battle', type=float, default=0.05)
+    ap.add_argument('--battle-mode', choices=['ce', 'usage'], default='ce',
+                    help='ce: per-pixel CE target; usage: 256-dim usage match')
+    ap.add_argument('--battle-tau-gate', type=float, default=0.0,
+                    help='fire the battle term only when tau <= this (0=always)')
+    ap.add_argument('--de-budget', type=float, default=0.03,
+                    help='max dE a pixel may pay to defect (battle)')
+    ap.add_argument('--anchor-half-life', type=int, default=0,
+                    help='R3: decay the warm anchor x0.5 every N steps (0=off)')
+    ap.add_argument('--cosine-lr', action='store_true')
+    ap.add_argument('--probe-scenes', type=int, default=4)
+    ap.add_argument('--eval-every', type=int, default=50)
+    ap.add_argument('--battle-eval-every', type=int, default=200)
+    ap.add_argument('--save', type=str, default='',
+                    help='path to save final weights (.safetensors)')
+    ap.add_argument('--ckpt-every', type=int, default=500,
+                    help='rolling checkpoint cadence (0=off; needs --save)')
+    ap.add_argument('--load', type=str, default='',
+                    help='warm-start weights from a .safetensors file')
     args = ap.parse_args()
 
+    global RES_GAIN
+    RES_GAIN = args.res_gain                           # read by losses/judges
     rng = np.random.default_rng(17)
-    model = V1H(d=24, in_side=args.side // 2)
+    probe_rng = np.random.default_rng(1234)            # HELD OUT, never trained
+    model = V1H(d=args.d, in_side=args.side // 2)
+    if args.load:
+        model.load_weights(args.load)
+        print(f'warm-started from {args.load}')
     opt = optim.Adam(learning_rate=args.lr)
     lg = nn.value_and_grad(
         model,
-        lambda m, x, t, sl, b16, b256, tau: losses(
-            m, x, t, sl, b16, b256, tau=tau, w_home=args.w_home)[0])
+        lambda m, x, t, sl, b16, b256, tau, ws, pw, ys, wb: losses(
+            m, x, t, sl, b16, b256, tau=tau, w_home=args.w_home,
+            w_seed=ws, band_chi2=args.band_chi2, pix_w=pw,
+            y_star=ys, w_battle=wb)[0])
 
-    xs, tl, sl, b16, b256 = synth.batch(rng, n=args.batch, side=args.side)
-    x_fix, t_fix, sl_fix = xs.copy(), tl.copy(), sl.copy()   # fixed probe batch
-    b16_fix, b256_fix = b16.copy(), b256.copy()
-    print('baseline (CLEAN classic seed on probe): ',
-          {k: round(v, 4) for k, v in classic_baseline(t_fix).items()})
-    print('baseline (NOISY classic seed on probe): ',
-          {k: round(v, 4) for k, v in noisy_baseline(t_fix, b16_fix).items()})
+    probe = synth.batch(probe_rng, n=args.probe_scenes, side=args.side)
+    clean_m, clean_rows = baseline_rows(probe, 'clean', with_battle=True,
+                                        de_budget=args.de_budget)
+    noisy_m, _ = baseline_rows(probe, 'noisy', with_battle=True,
+                               de_budget=args.de_budget)
+    print(f'probe = {args.probe_scenes} held-out scenes (rng 1234)')
+    print('baseline CLEAN classic:', fmt(clean_m))
+    print('baseline NOISY classic:', fmt(noisy_m))
 
     t0 = time.time()
     for step in range(1, args.steps + 1):
         # R3 compression anneal: warm (soft, forgiving) -> sharp
         # (near-hard assignment) geometrically across the run.
         tau = 0.5 * (0.05 / 0.5) ** ((step - 1) / max(args.steps - 1, 1))
+        w_seed = (0.5 ** (step / args.anchor_half_life)
+                  if args.anchor_half_life > 0 else 1.0)
+        if args.cosine_lr:
+            lr_t = (args.lr / 10
+                    + (args.lr - args.lr / 10)
+                    * 0.5 * (1 + math.cos(math.pi * (step - 1) / args.steps)))
+            opt.learning_rate = lr_t
         xs, tl, sl, b16, b256 = synth.batch(rng, n=args.batch, side=args.side)
-        x, t = mx.array(np.moveaxis(xs, 1, -1)), mx.array(tl)
-        slm = mx.array(sl)
-        loss, grads = lg(model, x, t, slm, mx.array(b16), mx.array(b256), tau)
+        x = mx.array(np.moveaxis(xs, 1, -1))
+        t, slm = mx.array(tl), mx.array(sl)
+        b16m, b256m = mx.array(b16), mx.array(b256)
+        pw = (mx.array(sigma_weights(b16, b256))
+              if args.sigma_curriculum else None)
+        battle_on = (args.battle_every > 0
+                     and step % args.battle_every == 0
+                     and (args.battle_tau_gate <= 0.0
+                          or tau <= args.battle_tau_gate))
+        if battle_on:
+            ys = battle_targets(model, x, b16m, t, args.de_budget)
+            if args.battle_mode == 'usage':
+                counts = np.stack([
+                    np.bincount(np.array(ys[b]), minlength=256)
+                    for b in range(ys.shape[0])]).astype(np.float32)
+                ys = mx.array(counts)                    # (B, 256)
+            wb = args.w_battle
+        else:
+            ys, wb = None, 0.0
+        loss, grads = lg(model, x, t, slm, b16m, b256m, tau, w_seed, pw, ys, wb)
         opt.update(model, grads)
         mx.eval(model.parameters(), opt.state)
-        if step % 20 == 0 or step == 1:
-            m = hard_metrics(model, np.moveaxis(x_fix, 1, -1), t_fix, b16_fix)
-            _, parts = losses(model, mx.array(np.moveaxis(x_fix, 1, -1)),
-                              mx.array(t_fix), mx.array(sl_fix),
-                              mx.array(b16_fix), mx.array(b256_fix), tau=tau,
-                              w_home=args.w_home)
-            names = ('ceil', 'seed', 'serve', 'chi2', 'bell', 'home')
-            pstr = ' '.join(f'{n}={float(v):.4f}' for n, v in zip(names, parts))
+
+        if step % args.eval_every == 0 or step == 1 or step == args.steps:
+            deep_eval = (step % args.battle_eval_every == 0
+                         or step == args.steps)
+            m, _ = probe_metrics(model, probe, with_battle=deep_eval,
+                                 de_budget=args.de_budget)
+            # Collapse tripwire (standing rule): 255n is total collapse.
+            if m['chi2'] > 0.9 * 255 * 65536:
+                print(f'!!! COLLAPSE TRIPWIRE: chi2 {m["chi2"]:.0f} '
+                      f'~ 255n — aborting (V1d closed form)')
+                raise SystemExit(2)
             print(f'step {step:4d}  loss {float(loss):.5f}  tau {tau:.3f}  '
-                  f'chi2 {m["chi2"]:9.1f}  homeShare {m["homeShare"]:.4f}  '
-                  f'dE {m["dE"]:.4f}  [{pstr}]  ({time.time() - t0:.1f}s)')
+                  f'w_seed {w_seed:.3f}  {fmt(m)}  ({time.time() - t0:.1f}s)')
+        if (args.save and args.ckpt_every > 0
+                and step % args.ckpt_every == 0):
+            ck = args.save.replace('.safetensors', '.ckpt.safetensors')
+            mx.save_safetensors(
+                ck, dict(mlx.utils.tree_flatten(model.parameters())))
 
-
-def noisy_baseline(target_lab, base16):
-    """What the INFERENCE-AVAILABLE classic seed (noisy mean) scores —
-    the residual model's true starting point and the bar to beat."""
-    return judged(base16[0].reshape(256, 3), target_lab[0].reshape(-1, 3))
-
-
-def classic_baseline(target_lab):
-    """What the classic seed (cfaBin 16 of the same scene) scores."""
-    tgt = target_lab[0]
-    seed = tgt.reshape(16, 16, 16, 16, 3).mean(axis=(1, 3)).reshape(256, 3)
-    return judged(seed, tgt.reshape(-1, 3))
+    # Final judgment: per-scene R4-style dominance vs CLEAN classic.
+    final_m, final_rows = probe_metrics(model, probe, with_battle=True,
+                                        de_budget=args.de_budget)
+    print('final model  :', fmt(final_m))
+    print('final classic:', fmt(clean_m))
+    # R4 gate, EQUILIBRIUM LAYER (redefined 2026-07-18): the equilibrium
+    # must be cheaper (dE_eq), closer to the band's center (chi2_eq),
+    # and the palette better arranged pre-battle (homeShare raw).
+    dom = 0
+    for mr, cr in zip(final_rows, clean_rows):
+        if (mr['dE_battle'] < cr['dE_battle']
+                and abs(mr['chi2_battle'] - 255) < abs(cr['chi2_battle'] - 255)
+                and mr['homeShare'] > cr['homeShare']):
+            dom += 1
+    print(f'dominance vs clean classic (equilibrium layer: dE_eq & '
+          f'band-distance_eq & homeShare_raw): {dom}/{len(final_rows)} scenes')
+    if args.save:
+        mx.save_safetensors(
+            args.save, dict(mlx.utils.tree_flatten(model.parameters())))
+        print(f'weights saved to {args.save}')
 
 
 if __name__ == '__main__':

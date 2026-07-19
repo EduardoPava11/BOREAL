@@ -50,19 +50,47 @@ Add the home term: patch p's soft-assignment mass should sit on color p
 crops: sample training patches where coarse disagrees with fine.
 EXIT: homeShare >= classic (~0.37 on synth) with dE <= 1.5x classic.
 
+## The equilibrium judge (REDEFINITION 2026-07-18, Daniel's call)
+
+Measured fact (held-out synth, this date): raw argmin against ANY
+competent palette sits ~13k-29k chi^2 — 50x outside the band; no
+palette closes that. The settled territory does: BA4 defections under
+a dE budget take clean classic 13.1k -> 469 for +0.0025 dE. THE BAND
+IS AN EQUILIBRIUM-LAYER PROPERTY (BA3: E[chi^2]=255 is neutral
+DRIFT's signature — an equilibrium statistic, never a raw-argmin
+one). The walk (DW laws) is the product-side realization.
+
+The judge, pinned (nn/v1/battle.py `judged_battle`, BA4/BA6-derived):
+  - prior = exact argmin index map (ties-lowest), bell-consistent
+    conventions (rank projection + induced monotone tone map);
+  - defections: each pixel may defect ONCE to one of its 8 nearest
+    palette options, only where BA6 pays (delta chi^2 < 0, BA4 closed
+    form), only within the dE budget 0.03, cheapest evidence
+    sacrifice first, stopping at band-hi 400;
+  - chi^2_eq / dE_eq are judged on the settled territory; homeShare
+    stays RAW (arrangement is a palette property — defections
+    legitimately leave home; the walk's DW3 locality governs the
+    product path instead).
+Classic baselines are ALWAYS judged through the same equilibrium.
+
 ## R3 — Compression (the theorem takes over)
-Anneal: decay the warm anchor (x0.5 per 2k steps), raise chi^2 + serve
-weights, cool tau (0.1 -> 0.02). The rate term now does the work T3
-licenses it to do. Bell penalty held constant (projection stays exact
-at eval; G-c watches the projection delta).
-EXIT: hard chi^2 INSIDE THE BEAUTY BAND (150-400, V1f) AND dE <=
-classic on held-out synth. (Not chi^2-minimal: sterile flats fail.)
+Anneal: raise chi^2 + serve weights, cool tau (0.1 -> 0.02). The rate
+term now does the work T3 licenses it to do. Bell penalty held
+constant (projection stays exact at eval; G-c watches the projection
+delta). ANCHOR STAYS FULL (measured 2026-07-18: anchor decay lost to
+full anchor on held-out judgment — the classic seed is load-bearing
+supervision, not scaffolding).
+EXIT: chi^2_eq INSIDE THE BEAUTY BAND (150-400, V1f) at the
+equilibrium layer AND dE_eq <= classic's dE_eq on held-out synth.
+(Not chi^2-minimal: sterile flats fail.)
 
 ## R4 — Dominate the classic (gate G-b for V1)
-Joint fine-tune, no anchor. EXIT: STRICT dominance over the classic seed
-on held-out synthetic: dE < classic AND chi^2 closer to the beauty
-band than classic AND homeShare > classic, all three simultaneously,
-95% of scenes.
+Joint fine-tune. EXIT (equilibrium-layer, per the judge above):
+STRICT dominance over the classic seed on held-out synthetic:
+  (a) dE_eq < classic's dE_eq        (the equilibrium is cheaper)
+  (b) |chi^2_eq - 255| < classic's   (closer to the band's center)
+  (c) homeShare_raw > classic's      (better arranged, pre-battle)
+all three simultaneously, 95% of scenes.
 
 ## R5 — Real photons
 Report-bundle loader (rawpy decodes the bundled DNGs; report.json's own

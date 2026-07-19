@@ -31,8 +31,11 @@ class SeedEncoder(nn.Module):
 
     def __init__(self, d=24, in_side=256):
         super().__init__()
-        self.stem = conv(16, 32, groups=4)          # per-frame subnets
-        self.fuse = conv(32, d, k=1)                # temporal fusion
+        # Stem width follows d (capacity bump 2026-07-18): 2d per-frame
+        # features before temporal fusion. d=24 -> 48-wide stem (legacy
+        # was 32); d=48 -> 96-wide.
+        self.stem = conv(16, 2 * d, groups=4)       # per-frame subnets
+        self.fuse = conv(2 * d, d, k=1)             # temporal fusion
         n_down = {256: 4, 512: 5, 1024: 6}[in_side]
         self.ladder = [conv(d, d, stride=2) for _ in range(n_down)]
 
