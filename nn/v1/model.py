@@ -81,9 +81,9 @@ class PatchPredictor(nn.Module):
     mixing on the 16x16 latent map followed by a pixel-shuffle style
     expansion (one shared net, 256 applications == convolution)."""
 
-    def __init__(self, d=24):
+    def __init__(self, d=24, in_extra=0):
         super().__init__()
-        self.mix1 = conv(d, d)                       # 3x3 neighbor context
+        self.mix1 = conv(d + in_extra, d)            # 3x3 neighbor context
         self.mix2 = conv(d, d)
         self.expand = conv(d, 256 * 3, k=1)          # -> 16*16 inner x 3
 
@@ -98,16 +98,30 @@ class PatchPredictor(nn.Module):
 
 
 class V1H(nn.Module):
-    def __init__(self, d=24, in_side=256, arbitrate=False):
+    def __init__(self, d=24, in_side=256, arbitrate=False,
+                 noise_latent=False):
         super().__init__()
         self.encoder = SeedEncoder(d, in_side, arbitrate=arbitrate)
         self.palette = conv(d, 3, k=1)               # the seed proposal
-        self.patches = PatchPredictor(d)
+        self.noise_latent = noise_latent
+        # E3 (NIB, ICCV 2021): a CNN cannot dither a flat region
+        # without a noise source. One noise channel, scale-normalized
+        # by the latent's own magnitude (stop-grad) so exposure
+        # equivariance survives (N4). Post-stem injection — the N-law
+        # input contract is untouched.
+        self.patches = PatchPredictor(d, in_extra=1 if noise_latent else 0)
 
     def __call__(self, x):
         z = self.encoder(x)                          # (B,16,16,d)
         seed = self.palette(z)                       # (B,16,16,3)
-        ceiling = self.patches(z)                    # (B,256,256,3)
+        if self.noise_latent:
+            b, h, w, _ = z.shape
+            scale = mx.stop_gradient(mx.mean(mx.abs(z))) + 1e-8
+            noise = mx.random.normal((b, h, w, 1)) * scale
+            zp = mx.concatenate([z, noise], axis=-1)
+        else:
+            zp = z
+        ceiling = self.patches(zp)                   # (B,256,256,3)
         return seed, ceiling
 
 

@@ -98,11 +98,27 @@ def som_refine(pal, tgt, G, iters=2, eta=0.5, tau=0.05):
     return pal
 
 
-def _gen_batch(seed, n, side):
+def _gen_batch(seed, n, side, pool=0):
     """Worker-side batch generation (module-level for pickling). Each
     batch gets its own child rng — reproducible per (seed) regardless
-    of worker scheduling."""
-    return synth.batch(np.random.default_rng(seed), n=n, side=side)
+    of worker scheduling. pool>n = E4 hard-example mining (Gharbi):
+    generate a candidate pool, keep the n HARDEST by cell-sigma
+    (coarse-vs-fine disagreement — the sampler form of the sigma
+    curriculum that lost as a loss weight)."""
+    rng = np.random.default_rng(seed)
+    if pool <= n:
+        return synth.batch(rng, n=n, side=side)
+    cands = [synth.make_cycle(rng, side) for _ in range(pool)]
+
+    def hardness(c):
+        _, _, _, b16, b256 = c
+        up = np.repeat(np.repeat(b16, 16, axis=0), 16, axis=1)
+        return float(np.abs(b256 - up).mean())
+
+    order = np.argsort([-hardness(c) for c in cands])[:n]
+    ts, tl, sl, b16, b256 = zip(*[cands[i] for i in order])
+    return (np.stack(ts), np.stack(tl), np.stack(sl),
+            np.stack(b16), np.stack(b256))
 
 
 class Prefetcher:
@@ -112,10 +128,11 @@ class Prefetcher:
     keeps the queue ahead of the GPU (10 P-cores; scenes are
     independent)."""
 
-    def __init__(self, workers, n, side, base_seed=1_000_000):
+    def __init__(self, workers, n, side, base_seed=1_000_000, mine_pool=0):
         from concurrent.futures import ProcessPoolExecutor
         self.pool = ProcessPoolExecutor(max_workers=workers)
         self.n, self.side = n, side
+        self.mine_pool = mine_pool
         self.next_seed = base_seed
         self.futures = []
         for _ in range(workers + 2):                   # prefetch depth
@@ -123,7 +140,8 @@ class Prefetcher:
 
     def _submit(self):
         self.futures.append(
-            self.pool.submit(_gen_batch, self.next_seed, self.n, self.side))
+            self.pool.submit(_gen_batch, self.next_seed, self.n, self.side,
+                             self.mine_pool))
         self.next_seed += 1
 
     def get(self):
@@ -151,7 +169,7 @@ def sigma_weights(b16, b256):
 def losses(model, x, target_lab, seed_lab, base16, base256,
            tau=0.1, w_home=0.05, w_seed=1.0, band_chi2=False,
            pix_w=None, y_star=None, w_battle=0.0, w_chi2=0.01,
-           som_G=None, som_iters=0, som_eta=0.5):
+           som_G=None, som_iters=0, som_eta=0.5, w_blue=0.0):
     # RESIDUAL-TO-CLASSIC (N3: the input contains the classic baseline
     # verbatim — identity is already a demosaicer). The net predicts
     # residuals; predictions START at classic-on-noisy performance.
@@ -162,6 +180,17 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
     if pix_w is not None:
         sq = sq * pix_w                               # sigma curriculum
     l_ceiling = mx.mean(sq)
+
+    # E3 blue-noise error shaping (RL-halftoning lesson: blue noise as
+    # a LOSS): penalize the LOW-FREQUENCY energy of the prediction
+    # error — banding lives there; dither hides error in high
+    # frequencies. 8x8 box-mean of the error field, squared.
+    if w_blue > 0.0:
+        err = ceiling - target_lab                    # (B,256,256,3)
+        low = err.reshape(-1, 32, 8, 32, 8, 3).mean(axis=(2, 4))
+        l_blue = mx.mean(low ** 2)
+    else:
+        l_blue = mx.zeros(())
 
     pal = seed.reshape(-1, 256, 3)                    # (B, 256, 3)
     tgt = target_lab.reshape(-1, 65536, 3)
@@ -232,7 +261,7 @@ def losses(model, x, target_lab, seed_lab, base16, base256,
 
     total = (l_ceiling + w_seed * l_seed + 0.1 * l_serve
              + w_chi2 * l_chi2 + 0.1 * l_bell + w_home * l_home
-             + w_battle * l_battle)
+             + w_battle * l_battle + w_blue * l_blue)
     return total, (l_ceiling, l_seed, l_serve, l_chi2, l_bell, l_home, l_battle)
 
 
@@ -276,7 +305,7 @@ def judged(seed_lab_256x3, target_flat):
 
 
 def model_seeds(model, x_np, base16_np, target_np=None,
-                som_G=None, som_iters=0, som_eta=0.5):
+                som_G=None, som_iters=0, som_eta=0.5, w_blue=0.0):
     s_res, _ = model(mx.array(x_np))
     seeds = base16_np + RES_GAIN * np.array(s_res)     # (B,16,16,3)
     if som_G is not None and som_iters > 0 and target_np is not None:
@@ -289,7 +318,7 @@ def model_seeds(model, x_np, base16_np, target_np=None,
 
 
 def probe_metrics(model, probe, with_battle=False, de_budget=0.03,
-                  som_G=None, som_iters=0, som_eta=0.5):
+                  som_G=None, som_iters=0, som_eta=0.5, w_blue=0.0):
     """Mean hard metrics over the held-out probe scenes; optionally the
     battle-refined columns (model side)."""
     x_np, t_np, _, b16_np, _ = probe
@@ -348,6 +377,13 @@ def main():
                     help='latent width (stem = 2d; capacity axis)')
     ap.add_argument('--res-gain', type=float, default=0.1,
                     help='residual scale off the classic base (RES_GAIN)')
+    ap.add_argument('--noise-latent', action='store_true',
+                    help='E3: NIB noise channel into the patch head')
+    ap.add_argument('--w-blue', type=float, default=0.0,
+                    help='E3: blue-noise error-shaping weight (0=off)')
+    ap.add_argument('--mine-pool', type=int, default=0,
+                    help='E4: candidate pool per batch; keep the '
+                         'batch-size hardest by cell-sigma (0=off)')
     ap.add_argument('--som-refine', type=int, default=0,
                     help='E2: unrolled per-scene SOM refinement iters (0=off)')
     ap.add_argument('--som-sigma', type=float, default=1.5,
@@ -417,7 +453,8 @@ def main():
             f.write(json.dumps({'event': event, **kv}) + '\n')
     rng = np.random.default_rng(17)
     probe_rng = np.random.default_rng(1234)            # HELD OUT, never trained
-    model = V1H(d=args.d, in_side=args.side // 2, arbitrate=args.arbitrate)
+    model = V1H(d=args.d, in_side=args.side // 2, arbitrate=args.arbitrate,
+                noise_latent=args.noise_latent)
     if args.load:
         model.load_weights(args.load)
         print(f'warm-started from {args.load}')
@@ -429,7 +466,7 @@ def main():
             w_seed=ws, band_chi2=args.band_chi2, pix_w=pw,
             y_star=ys, w_battle=wb, w_chi2=args.w_chi2,
             som_G=som_G, som_iters=args.som_refine,
-            som_eta=args.som_eta)[0])
+            som_eta=args.som_eta, w_blue=args.w_blue)[0])
     som_G = som_kernel(args.som_sigma) if args.som_refine > 0 else None
 
     def soft_hard_gap(x, t, b16m, tau):
@@ -466,7 +503,8 @@ def main():
     # Prefetcher up front (not lazily at step 1) so the finally below
     # can always reap the pool — tripwire SystemExit / worker exceptions
     # must not leak child processes.
-    prefetcher = (Prefetcher(args.workers, args.batch, args.side)
+    prefetcher = (Prefetcher(args.workers, args.batch, args.side,
+                             mine_pool=args.mine_pool)
                   if args.workers > 0 else None)
     t0 = time.time()
     # E1 controller v2 (v1 FAILED 2026-07-18: cool-only-when-converged
