@@ -32,8 +32,8 @@ format still open. Layers 5-6 designed, not started.
 
 ```
                  ┌──────────────────────────────────────────────────────┐
- sensor 4224x3024│ L1 CAPTURE   16 cycles x 4 EV frames @ ~20fps (~3.2s)│ Swift/AVF
- 14-bit Bayer    │   ETTR planner re-plans EVs between cycles           │
+ mosaic 4032x3024│ L1 CAPTURE   16 cycles x 4 EV frames @ ~20fps (~3.2s)│ Swift/AVF
+ 12-bit Bayer    │   ETTR planner re-plans EVs between cycles           │
                  └──────────────┬───────────────────────────────────────┘
                                 │ CVPixelBuffer ring (6 deep, ~150 MB), no DNG
                  ┌──────────────▼───────────────────────────────────────┐
@@ -82,8 +82,12 @@ Exactness domains (deliberate, per data type):
 
 ## L1 Capture (bracket LANDED, burst loop TO GRAFT)
 
-Hardware path: iPhone 17 Pro rear wide, 12MP quad-binned Bayer readout
-4224x3024, 14-bit samples in 16-bit containers. Naked Bayer RAW only:
+Hardware path: iPhone 17 Pro rear wide, 12MP quad-binned Bayer.
+DEVICE-VERIFIED (2026-07-17 run, c386663): the DECODED mosaic is
+4032x3024 (DefaultCropSize applied at decode; the pre-crop tile raster
+is 4224x3024, decoder-internal), BGGR, 12-BIT samples in 16-bit
+containers (black 528, white 4095 — never assume 14-bit/16383).
+Naked Bayer RAW only:
 `isAppleProRAWEnabled = false`, format via `isBayerRAWPixelFormat`,
 `photoQualityPrioritization = .speed` (device-verified: `.balanced` throws
 on Bayer capture).
@@ -117,7 +121,7 @@ NN (L5) later replaces steps 3-5 jointly and must beat it per rung.
 
 | # | step | kernel | in -> out | notes |
 |---|------|--------|-----------|-------|
-| 1 | crop | (Swift ptr math) | 4224x3024 -> 2048² u16 | center, even-aligned to preserve RGGB phase; 2048 = 256·2^3 (CS1) |
+| 1 | crop | (Swift ptr math) | 4032x3024 -> 2048² u16 | center, even-aligned to preserve CFA phase (BGGR on device); 2048 = 256·2^3 (CS1) |
 | 2 | ratios | `bk_relative_exposures` | EXIF x4 -> e_t f32[4] | darkest=1, clamp [1,256], EV1-EV3 laws |
 | 3 | fuse | `bk_fuse_mosaics` | 4x u16 2048² -> f32 2048² | scene-linear, SNR+saturation weighted, SIMD 8-lane |
 | 4 | demosaic | `bk_demosaic_full` | mosaic -> f32 RGB 2048² | Malvar-He-Cutler, SIMD columns |
@@ -127,7 +131,7 @@ NN (L5) later replaces steps 3-5 jointly and must beat it per rung.
 | 8 | pyramid | `bk_pyramid_analyze` x3 | 256² i32 -> 256² i32 bands | per channel L,a,b; scratch 32Ki32 |
 
 Budgets per cycle (target: << 200 ms at 20 fps cadence):
-- compute: steps 3-5 are already device-proven at FULL 4224x3024 in the
+- compute: steps 3-5 are already device-proven at FULL 4032x3024 in the
   one-shot pipeline; at 2048² (0.35x the pixels) the whole chain is
   comfortably sub-frame. Step 7 is 65k px of f64 (3 cbrt each): ~1-2 ms
   scalar, SIMD later if needed. Step 8 is ~90k integer quad transforms.

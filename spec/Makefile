@@ -1,6 +1,6 @@
 # BOREAL Haskell Specs — 64-burst → 16×16 LAB latent
 # Run: make test          (all specs)
-#      make test-one F=buffer/EmbeddedPyramid.hs
+#      make test-one F=geometry/CropShape.hs
 
 RUNGHC = runghc
 # -package-env=- ignores the GHCup default env that hides base libs
@@ -9,7 +9,6 @@ FLAGS  = -W -package-env=-
 # ── File lists by layer ──────────────────────────────────
 
 GEOMETRY  = geometry/CropShape.hs
-BUFFER    = buffer/EmbeddedPyramid.hs
 PALETTE   = palette/PaletteGrid.hs
 EXPOSURE  = exposure/EvNormalize.hs exposure/EvPlan.hs
 COLORPATH = colorpath/ColorQuant.hs
@@ -24,13 +23,13 @@ DITHERWALK = ditherwalk/DitherWalkLaws.hs
 TESSGRID  = tessgrid/TessGridLaws.hs
 BATTLE    = battle/BattleLaws.hs
 
-CORE = $(GEOMETRY) $(BUFFER) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM) $(DITHERWALK) $(TESSGRID) $(BATTLE)
+CORE = $(GEOMETRY) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM) $(DITHERWALK) $(TESSGRID) $(BATTLE)
 
 # ── Targets ──────────────────────────────────────────────
 
 .PHONY: test test-verbose test-one emit gate list
 
-# Regenerate the Zig golden fixtures (single-source from Boreal/*).
+# Regenerate the golden fixtures (single-source from Boreal/*).
 emit:
 	$(RUNGHC) $(FLAGS) emit/EmitGoldens.hs
 
@@ -67,7 +66,7 @@ test-verbose:
 		$(RUNGHC) $(FLAGS) $$f || true; \
 	done
 
-# Run a single spec: make test-one F=buffer/EmbeddedPyramid.hs
+# Run a single spec: make test-one F=geometry/CropShape.hs
 test-one:
 	$(RUNGHC) $(FLAGS) $(F)
 

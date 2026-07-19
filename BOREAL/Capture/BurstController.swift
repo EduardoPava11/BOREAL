@@ -344,20 +344,18 @@ final class BurstController {
 
     /// Largest 256·2^j ≤ min(width, height), capped at the spec canonical
     /// 2048 (CS1). nil when the sensor can't cover even the 256² ceiling.
+    /// The math lives in GeometryKernel and is gate-verified against the
+    /// geometry.json crop-case table.
     nonisolated private static func canonicalSide(width: Int, height: Int) -> Int? {
-        let m = min(width, height)
-        guard m >= 256 else { return nil }
-        var s = 256
-        while s * 2 <= m && s * 2 <= 2048 { s *= 2 }
-        return s
+        Kernel.canonicalSide(width: width, height: height)
     }
 
-    /// Center crop to side², origin snapped to EVEN coordinates so the RGGB
-    /// phase (and therefore frame.cfa) is preserved.
+    /// Center crop to side², origin snapped to EVEN coordinates so the CFA
+    /// phase (and therefore frame.cfa) is preserved (CS7).
     nonisolated private static func cropCenter(_ f: Kernel.Frame, side: Int) -> Kernel.Frame {
         guard f.width != side || f.height != side else { return f }
-        let x0 = ((f.width - side) / 2) & ~1
-        let y0 = ((f.height - side) / 2) & ~1
+        let x0 = Kernel.cropOrigin(f.width, side: side)
+        let y0 = Kernel.cropOrigin(f.height, side: side)
         var s = [UInt16]()
         s.reserveCapacity(side * side)
         f.samples.withUnsafeBufferPointer { p in

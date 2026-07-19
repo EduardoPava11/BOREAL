@@ -97,6 +97,35 @@ guard let gif = BorealKernels.gifEncode(frames: gframes, side: gside,
 else { die("gifEncode returned nil") }
 if [UInt8](gif) != bytes(gw["gifBytes"]) { die("gif bytes drift") }
 
+// ── geometry: the crop derivation vs the fixture's case table ──────────────
+// (CS1/CS6/CS7 — the app's canonicalSide/cropOrigin, device mosaic included)
+let geo = loadJSON("\(dir)/geometry.json")
+let geoSensor = (geo["sensor"] as! [Any]).map { Int(truncating: $0 as! NSNumber) }
+if geoSensor != [4032, 3024] { die("geometry sensor is not the device-verified mosaic") }
+let geoCanonical = Int(truncating: geo["canonicalSide"] as! NSNumber)
+if BorealKernels.canonicalSideCap != geoCanonical { die("canonical cap drift") }
+if BorealKernels.canonicalSide(width: geoSensor[0], height: geoSensor[1]) != geoCanonical {
+    die("device mosaic does not derive the canonical side")
+}
+for c in geo["cropCases"] as! [[String: Any]] {
+    let w = Int(truncating: c["w"] as! NSNumber)
+    let h = Int(truncating: c["h"] as! NSNumber)
+    let want = (c["side"] as? NSNumber).map { Int(truncating: $0) }  // null → nil
+    let got = BorealKernels.canonicalSide(width: w, height: h)
+    if got != want { die("crop side drift at \(w)x\(h): \(String(describing: got)) vs \(String(describing: want))") }
+    if let s = got {
+        let x0 = BorealKernels.cropOrigin(w, side: s)
+        let y0 = BorealKernels.cropOrigin(h, side: s)
+        if x0 != Int(truncating: c["x0"] as! NSNumber) { die("x0 drift at \(w)x\(h)") }
+        if y0 != Int(truncating: c["y0"] as! NSNumber) { die("y0 drift at \(w)x\(h)") }
+        if x0 % 2 != 0 || y0 % 2 != 0 { die("odd crop origin at \(w)x\(h)") }
+    }
+}
+let geoRungs = (geo["rungs"] as! [Any]).map { Int(truncating: $0 as! NSNumber) }
+if BorealKernels.msRungs(side: geoCanonical) != geoRungs {
+    die("msRungs(\(geoCanonical)) does not reproduce the spec ladder")
+}
+
 // ── ported-kernel checks (fuse / scene / DNG — M3/M4 migration) ────────────
 let ev = loadJSON("\(dir)/exposure_golden.json")
 for c in ev["cases"] as! [[String: Any]] {

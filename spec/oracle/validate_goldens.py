@@ -1,8 +1,8 @@
 # ════════════════════════════════════════════════════════════════
 # validate_goldens.py — independent Python oracle for the emitted
-# Zig fixtures (OneSix pattern: Haskell contract = Python evidence
-# = Zig kernel).  Re-implements the LCG, S-transform pyramid,
-# FNV-1a-64 checksum, and CFA binning FROM THE WRITTEN CONVENTIONS
+# fixtures (OneSix pattern: Haskell contract = Python evidence
+# = Swift kernel).  Re-implements the crop derivation, CFA binning,
+# color path, GIF wire, and statistics FROM THE WRITTEN CONVENTIONS
 # (not from the Haskell source) and asserts bit-exact agreement.
 # Run from spec/:  python3 oracle/validate_goldens.py
 # ════════════════════════════════════════════════════════════════
@@ -13,64 +13,6 @@ import struct
 import sys
 
 FIXTURES = os.path.join(os.path.dirname(__file__), '..', '..', 'fixtures')
-
-M = 1 << 64
-
-
-def floordiv(a, b):
-    return a // b            # python // floors: matches Haskell div
-
-
-def lcg(s):
-    return (s * 6364136223846793005 + 1442695040888963407) % M
-
-
-def signed(v):
-    return v - M if v >= (M >> 1) else v
-
-
-def sample(s):
-    return floordiv(signed(s), 65536) % 4097 - 2048
-
-
-def mkimg(seed, side):
-    vals, s = [], seed % M
-    for _ in range(side * side):
-        vals.append(sample(s))
-        s = lcg(s)
-    return [vals[i * side:(i + 1) * side] for i in range(side)]
-
-
-def st(a, b):
-    return (floordiv(a + b, 2), a - b)
-
-
-def analyze(img):
-    n = len(img)
-    coarse, lh, hl, hh = [], [], [], []
-    for r in range(0, n, 2):
-        crow = []
-        for c in range(0, n, 2):
-            a, b = img[r][c], img[r][c + 1]
-            c2, d = img[r + 1][c], img[r + 1][c + 1]
-            l0, h0 = st(a, b)
-            l1, h1 = st(c2, d)
-            ll, LH = st(l0, l1)
-            HL, HH = st(h0, h1)
-            crow.append(ll)
-            lh.append(LH)
-            hl.append(HL)
-            hh.append(HH)
-        coarse.append(crow)
-    return coarse, lh, hl, hh
-
-
-def pyramid(img, base=16):
-    cur, levels = img, []
-    while len(cur) > base:
-        cur, lh, hl, hh = analyze(cur)
-        levels.insert(0, (lh, hl, hh))       # coarse -> fine
-    return cur, levels
 
 
 CBRT2 = 1.2599210498948731647672106072782
@@ -106,48 +48,43 @@ def q16(x):
     return math.floor(x * 65536 + 0.5)
 
 
-def fnv(ints):
-    h = 14695981039346656037
-    for v in ints:
-        w = v % (1 << 32)
-        for sh in (0, 8, 16, 24):
-            h = ((h ^ ((w >> sh) & 0xff)) * 1099511628211) % M
-    return h
-
-
-def flat(rows):
-    return [x for row in rows for x in row]
-
-
 def main():
     os.chdir(FIXTURES)
 
+    # ── geometry: device facts + the crop derivation, re-derived ─────────
     g = json.load(open('geometry.json'))
+    assert g['sensor'] == [4032, 3024], 'decoded mosaic (device-verified c386663)'
+    assert g['rasterPreCrop'] == [4224, 3024], 'decoder-internal tile raster'
+    dv = g['deviceVerified']
+    assert dv['white'] == (1 << dv['adcBits']) - 1 == 4095, '12-bit white'
+    assert dv['black'] == 528 and 0 < dv['black'] < dv['white']
+    assert dv['cfa'] == 1 and dv['cfaName'] == 'BGGR'
     assert g['rungs'] == [16, 32, 64, 128, 256] and g['ceilingRung'] == 256
     assert g['canonicalSide'] == 2048 and g['cycles'] == 16
     assert g['gridSide'] ** 2 == g['ceilingRung']
 
-    p = json.load(open('pyramid_golden.json'))
-    for f in p['fixtures']:
-        img = mkimg(f['seed'], f['side'])
-        assert flat(img) == f['image'], f"{f['name']}: LCG mismatch"
-        top, levels = pyramid(img, f['base'])
-        assert flat(top) == f['top'], f"{f['name']}: top band mismatch"
-        assert len(levels) == len(f['levels'])
-        for (lh, hl, hh), lv in zip(levels, f['levels']):
-            assert lh == lv['lh'] and hl == lv['hl'] and hh == lv['hh'], \
-                f"{f['name']}: detail mismatch at side {lv['detailSide']}"
+    def canonical_side(w, h, cap):
+        # largest 256*2^j <= min(w,h), capped; None below the 256 ceiling
+        m = min(w, h)
+        if m < 256:
+            return None
+        s = 256
+        while s * 2 <= m and s * 2 <= cap:
+            s *= 2
+        return s
 
-    for cf in p['checksumFixtures']:
-        img = mkimg(cf['seed'], cf['side'])
-        top, levels = pyramid(img, cf['base'])
-        assert top[0][:8] == cf['topFirstRow8']
-        stream = flat(top)
-        for lh, hl, hh in levels:
-            for i in range(len(lh)):
-                stream += [lh[i], hl[i], hh[i]]
-        assert str(fnv(flat(img))) == cf['imageFnv1a64'], 'image checksum'
-        assert str(fnv(stream)) == cf['bandsFnv1a64'], 'bands checksum'
+    def crop_origin(dim, side):
+        return ((dim - side) // 2) & ~1      # even snap: CFA phase survives
+
+    for c in g['cropCases']:
+        s = canonical_side(c['w'], c['h'], g['canonicalSide'])
+        assert s == c.get('side'), f"crop side drift at {c}"
+        if s is not None:
+            assert crop_origin(c['w'], s) == c['x0'], f"x0 drift at {c}"
+            assert crop_origin(c['h'], s) == c['y0'], f"y0 drift at {c}"
+            assert c['x0'] % 2 == 0 and c['y0'] % 2 == 0, 'odd crop origin'
+    assert canonical_side(*g['sensor'], g['canonicalSide']) \
+        == g['canonicalSide'], 'device mosaic must yield the canonical side'
 
     pal = json.load(open('palette_golden.json'))
     assert len(pal['L']) == len(pal['a']) == len(pal['b']) == 256

@@ -113,6 +113,16 @@ enum Kernel {
                                       white: f.white, invE: invE)
     }
 
+    // ── Crop geometry (CS1/CS6/CS7, gate-verified vs geometry.json) ────────
+
+    static func canonicalSide(width: Int, height: Int) -> Int? {
+        BorealKernels.canonicalSide(width: width, height: height)
+    }
+
+    static func cropOrigin(_ dim: Int, side: Int) -> Int {
+        BorealKernels.cropOrigin(dim, side: side)
+    }
+
     // ── Multi-scale demosaic: the custom ISP (Phase 3, MS laws) ────────────
 
     static func msRungs(side: Int) -> [Int] { BorealKernels.msRungs(side: side) }

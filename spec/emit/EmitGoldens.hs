@@ -1,29 +1,28 @@
 -- ════════════════════════════════════════════════════════════════
--- EmitGoldens — writes the golden fixtures the Zig kernel tests
--- assert against (OneSix pattern: Haskell contract = Zig kernel).
+-- EmitGoldens — writes the golden fixtures the Swift kernel harness
+-- asserts against (OneSix pattern: Haskell contract = Swift kernel).
 --
--- Output: ../zig/borealkernel/fixtures/
---   geometry.json         pipeline constants (single source)
---   pyramid_golden.json   S-transform bands, exact arrays at 32²
---                         and 64²; FNV-1a-64 checksums at 256²
+-- Output: ../fixtures/
+--   geometry.json         pipeline constants + device-verified
+--                         sensor facts + the crop-case table
+--                         (single source; Swift replays the cases)
 --   palette_golden.json   256 OKLab seed colors + conversion refs
 --                         (tolerance 1e-9 — transcendental ulps)
 --   exposure_golden.json  EV ratio cases (exact ℚ + f64) and the
 --                         dyadic cfaBin mosaic (bit-exact in f64)
+--   ... (colorpath, giftarget, multiscale, gifwire, cycleset,
+--        binomial, battle — see each section)
 --
--- Checksum stream convention (normative): i32 little-endian bytes;
--- stream = top band row-major, then per detail level COARSE→FINE,
--- per quad row-major, (LH, HL, HH) interleaved.  FNV-1a 64-bit:
--- offset 14695981039346656037, prime 1099511628211.
+-- (The S-transform pyramid fixture was retired 2026-07-18 with its
+-- law file — superseded by the multi-scale residual stack; git
+-- history and archive/zig-kernel preserve it.)
 -- Run from spec/:  runghc -W -package-env=- emit/EmitGoldens.hs
 -- ════════════════════════════════════════════════════════════════
 
 module Main where
 
-import Data.Bits (shiftR, xor, (.&.))
-import Data.List (foldl', intercalate)
+import Data.List (intercalate)
 import Data.Ratio (denominator, numerator)
-import Data.Word (Word32, Word64)
 import System.Directory (createDirectoryIfMissing)
 
 import Boreal.Battle
@@ -36,7 +35,6 @@ import Boreal.GifTarget
 import Boreal.GifWire
 import Boreal.MultiScale
 import Boreal.Palette
-import Boreal.Pyramid
 
 outDir :: FilePath
 outDir = "../fixtures"
@@ -60,68 +58,6 @@ jDbls = jArr . map show
 
 jRat :: Rational -> String
 jRat r = jArr [show (numerator r), show (denominator r)]
-
--- ── FNV-1a 64 over i32 little-endian bytes ─────────────────────
-
-fnv1a64 :: [Int] -> Word64
-fnv1a64 = foldl' step 14695981039346656037 . concatMap toBytes
-  where toBytes v =
-          let w = fromIntegral v :: Word32
-          in [ fromIntegral ((w `shiftR` s) .&. 0xff) :: Word64
-             | s <- [0, 8, 16, 24] ]
-        step h b = (h `xor` b) * 1099511628211
-
--- ── Pyramid fixtures ───────────────────────────────────────────
-
-bandStream :: Image -> [Detail] -> [Int]
-bandStream top ds =
-  concat top
-    ++ concat [ concat [ [lh, hl, hh] | row <- d, (lh, hl, hh) <- row ]
-              | d <- ds ]
-
-pyramidExact :: Int -> Int -> String
-pyramidExact seed side = jObj
-  [ ("name",  jStr ("lcg_s" ++ show seed ++ "_side" ++ show side))
-  , ("seed",  show seed)
-  , ("side",  show side)
-  , ("base",  show gridSide)
-  , ("image", jInts (concat img))
-  , ("top",   jInts (concat top))
-  , ("levels", jArr
-      [ jObj [ ("detailSide", show (length d))
-             , ("lh", jInts [ x | row <- d, (x, _, _) <- row ])
-             , ("hl", jInts [ x | row <- d, (_, x, _) <- row ])
-             , ("hh", jInts [ x | row <- d, (_, _, x) <- row ]) ]
-      | d <- ds ])
-  ]
-  where img       = mkImage seed side
-        (top, ds) = analyzeTo gridSide img
-
-pyramidChecksum :: Int -> Int -> String
-pyramidChecksum seed side = jObj
-  [ ("name",          jStr ("lcg_s" ++ show seed ++ "_side" ++ show side))
-  , ("seed",          show seed)
-  , ("side",          show side)
-  , ("base",          show gridSide)
-  , ("imageFnv1a64",  jStr (show (fnv1a64 (concat img))))
-  , ("bandsFnv1a64",  jStr (show (fnv1a64 (bandStream top ds))))
-  , ("topFirstRow8",  jInts (take 8 (head top)))
-  ]
-  where img       = mkImage seed side
-        (top, ds) = analyzeTo gridSide img
-
-pyramidJson :: String
-pyramidJson = jObj
-  [ ("conventions", jObj
-      [ ("st",          jStr "l = floor((a+b)/2), h = a-b; inverse a = l + floor((h+1)/2), b = a-h")
-      , ("quadOrder",   jStr "horizontal pairs first, then vertical (row-first)")
-      , ("detailOrder", jStr "levels coarse->fine; per quad row-major (LH,HL,HH)")
-      , ("lcg",         jStr "s' = s*6364136223846793005 + 1442695040888963407 (wrapping i64); sample = floorDiv(s,65536) euclidMod 4097 - 2048")
-      , ("checksum",    jStr "FNV-1a 64 over i32 LE bytes; stream = top row-major ++ levels coarse->fine per quad (LH,HL,HH)")
-      ])
-  , ("fixtures", jArr [ pyramidExact 101 32, pyramidExact 202 64 ])
-  , ("checksumFixtures", jArr [ pyramidChecksum 303 ceilingRung ])
-  ]
 
 -- ── Palette fixture ────────────────────────────────────────────
 
@@ -447,7 +383,20 @@ battleJson = jObj
 
 geometryJson :: String
 geometryJson = jObj
-  [ ("sensor",           jInts [sensorW, sensorH])
+  [ ("conventions", jObj
+      [ ("sensor",     jStr "DECODED DNG mosaic (post-DefaultCrop) — what every kernel receives; device-verified 2026-07-17 c386663; pre-crop tile raster is rasterPreCrop, decoder-internal only")
+      , ("crop",       jStr "canonical side = largest 256*2^j <= min(w,h), capped at canonicalSide; null when min(w,h) < 256; origin = ((dim-side) div 2) & ~1 (even snap preserves CFA phase)")
+      , ("cropCases",  jStr "replayed verbatim by the Swift harness against BorealKernels.canonicalSide/cropOrigin")
+      ])
+  , ("sensor",           jInts [sensorW, sensorH])
+  , ("rasterPreCrop",    jInts [rasterW, rasterH])
+  , ("deviceVerified", jObj
+      [ ("cfa",     show cfaIndex)
+      , ("cfaName", jStr "BGGR")
+      , ("black",   show blackLevel)
+      , ("white",   show whiteLevel)
+      , ("adcBits", show adcBits)
+      ])
   , ("canonicalSide",    show canonicalSide)
   , ("gridSide",         show gridSide)
   , ("cellSide",         show cellSide)
@@ -458,7 +407,16 @@ geometryJson = jObj
   , ("cycleFrames",      show cycleFrames)
   , ("cycles",           show cycles)
   , ("latentChannels",   show latentChannels)
+  , ("cropCases", jArr [ cropCaseJson w h | (w, h) <- cropCases ])
   ]
+  where
+    cropCaseJson w h = case canonicalSideFor w h of
+      Nothing -> jObj [ ("w", show w), ("h", show h)
+                      , ("side", "null") ]
+      Just s  -> jObj [ ("w", show w), ("h", show h)
+                      , ("side", show s)
+                      , ("x0", show (cropOrigin w s))
+                      , ("y0", show (cropOrigin h s)) ]
 
 -- ── Main ───────────────────────────────────────────────────────
 
@@ -466,7 +424,6 @@ main :: IO ()
 main = do
   createDirectoryIfMissing True outDir
   emit "geometry.json"         geometryJson
-  emit "pyramid_golden.json"   pyramidJson
   emit "palette_golden.json"   paletteJson
   emit "exposure_golden.json"  exposureJson
   emit "colorpath_golden.json" colorpathJson
