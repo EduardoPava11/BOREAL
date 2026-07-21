@@ -20,6 +20,25 @@ import pipeline as P
 BLACK_DN, WHITE_DN = 528.0, 4095.0          # device-measured, 12-bit
 DEVICE_EVS = np.array([1.0, 3.66, 15.0, 62.5])   # EXIF ratios, first run
 
+# T3 (BOREAL-RAW-LIKELIHOOD-RESEARCH.md §8): the sensor's calibrated
+# Poisson-Gaussian model, PER FRAME, from DNG NoiseProfile tag 51041 —
+# exact doubles read from the 2026-07-19 device cycle (bracket order =
+# rising ISO; includes the dual-conversion-gain break: S saturates from
+# frame 3 up). var(y) = S·y + O on the DNG-normalized signal.
+DEVICE_PROFILES = np.array([
+    [1.33622e-04, 9.7885e-07],     # frame 1, ISO 100
+    [2.57996e-04, 6.53727e-07],    # frame 2, ISO 200
+    [5.34232e-04, 1.31462e-06],    # frame 3, ISO 500
+    [5.42475e-04, 1.30951e-06],    # frame 4, ISO 1250
+])
+
+# THE BIN BOUNDARY (bin-commutation theorem, honest caveat): the model's
+# input is phi(beta_4(crop)) — every input sample is the mean of b² = 16
+# photosites — so training noise must be injected at the POST-BIN level:
+# var/16. Training at native-site noise was the registered train/device
+# distribution skew; this closes it.
+BIN_AVG = 16.0
+
 
 def make_scene(rng, side=512, blobs=24):
     """Linear-'ProPhoto' RGB with REAL dynamic range: deep-shadow floor
@@ -73,19 +92,57 @@ def sensor_read(rng, linear, read_noise_dn=2.0):
     return (dn - BLACK_DN) / span
 
 
-def make_cycle(rng, side=512, photons_at_1=4000.0, evs=DEVICE_EVS):
+def likelihood_map(clean, side, evs=DEVICE_EVS, profiles=DEVICE_PROFILES,
+                   clip_y=0.98):
+    """T3: per-ceiling-cell INVERSE VARIANCE of the classic noisy base
+    under the tag noise model — the physical score's weight, computed
+    from ground truth (we own the scene):
+      var_j(x) = (S_j·y_j + O_j) / 16 / e_j²,  y_j = clean·e_j
+      frames combine as the equal-weight mean the pipeline uses;
+      CENSORED frames (y ≥ clip) contribute a huge variance instead
+      of information. Returns (side/2, side/2) float32 raw 1/var —
+      tempering into a stable loss weight happens in the trainer."""
+    var_mean = np.zeros_like(clean)
+    for e, (S, O) in zip(evs, profiles):
+        y = clean * e
+        v = (S * np.maximum(y, 0.0) + O) / BIN_AVG / (e * e)
+        var_mean += np.where(y >= clip_y, 1.0, v)   # censoring penalty
+    var_mean /= float(len(evs)) ** 2                # var of the J-frame mean
+    half = clean.shape[0] // 2
+    cell = var_mean.reshape(half, 2, half, 2).mean(axis=(1, 3)) / 4.0
+    return (1.0 / (cell + 1e-12)).astype(np.float32)
+
+
+def make_cycle(rng, side=512, photons_at_1=4000.0, evs=DEVICE_EVS,
+               tag_noise=True):
     """One training sample.
     Returns: tensor (16, side/2, side/2) f32  — the NN input (N laws)
              target_lab (256, 256, 3) f64     — classic ceiling OKLab
              seed_lab (16, 16, 3) f64         — classic seed OKLab
+             base16/base256                   — classic-on-noisy bases
+             w_lik (side/2, side/2) f32       — T3 inverse-variance map
+
+    Noise (T3 default): the TAG model at post-bin level — Gaussian with
+    var = (S_j·y + O_j)/16 per frame (the affine law's second moment;
+    at 16-sample bins the CLT makes Gaussian honest), white saturation
+    at y = 1, sub-black clamped at 0 (mirroring the shipped CQ6 clamp —
+    the censoring bias is MODELED, not hidden). Post-bin quantization
+    grain (~1/16 DN) is negligible and skipped. tag_noise=False keeps
+    the legacy Poisson(4000)+read2.0 native-site model for comparisons.
     """
     scene = make_scene(rng, side)
     clean = expose_for_bracket(rng, mosaic_of(scene), evs)
     frames = []
-    for e in evs:
+    for e, (S, O) in zip(evs, DEVICE_PROFILES):
         exposed = clean * e
-        shot = rng.poisson(np.maximum(exposed, 0) * photons_at_1) / photons_at_1
-        raw = sensor_read(rng, shot)                   # 12-bit ADC + clip
+        if tag_noise:
+            noisy = exposed + rng.normal(0.0, 1.0, exposed.shape) * np.sqrt(
+                (S * np.maximum(exposed, 0.0) + O) / BIN_AVG)
+            raw = np.clip(noisy, 0.0, 1.0)
+        else:
+            shot = (rng.poisson(np.maximum(exposed, 0) * photons_at_1)
+                    / photons_at_1)
+            raw = sensor_read(rng, shot)               # 12-bit ADC + clip
         frames.append((raw / e).astype(np.float32))    # EV-normalize (exact role)
     tensor = P.cycle_tensor(frames).astype(np.float32)
     target_lab = P.oklab_from_prophoto(P.cfa_rung(clean, 256))
@@ -96,10 +153,11 @@ def make_cycle(rng, side=512, photons_at_1=4000.0, evs=DEVICE_EVS):
     noisy_mean = np.mean(frames, axis=0)
     base16 = P.oklab_from_prophoto(P.cfa_rung(noisy_mean, 16))
     base256 = P.oklab_from_prophoto(P.cfa_rung(noisy_mean, 256))
-    return tensor, target_lab, seed_lab, base16, base256
+    w_lik = likelihood_map(clean, side, evs=evs)
+    return tensor, target_lab, seed_lab, base16, base256, w_lik
 
 
 def batch(rng, n=4, side=512):
-    ts, tl, sl, b16, b256 = zip(*[make_cycle(rng, side) for _ in range(n)])
+    ts, tl, sl, b16, b256, wl = zip(*[make_cycle(rng, side) for _ in range(n)])
     return (np.stack(ts), np.stack(tl), np.stack(sl),
-            np.stack(b16), np.stack(b256))
+            np.stack(b16), np.stack(b256), np.stack(wl))

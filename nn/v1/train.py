@@ -111,14 +111,14 @@ def _gen_batch(seed, n, side, pool=0):
     cands = [synth.make_cycle(rng, side) for _ in range(pool)]
 
     def hardness(c):
-        _, _, _, b16, b256 = c
+        _, _, _, b16, b256, _ = c
         up = np.repeat(np.repeat(b16, 16, axis=0), 16, axis=1)
         return float(np.abs(b256 - up).mean())
 
     order = np.argsort([-hardness(c) for c in cands])[:n]
-    ts, tl, sl, b16, b256 = zip(*[cands[i] for i in order])
+    ts, tl, sl, b16, b256, wl = zip(*[cands[i] for i in order])
     return (np.stack(ts), np.stack(tl), np.stack(sl),
-            np.stack(b16), np.stack(b256))
+            np.stack(b16), np.stack(b256), np.stack(wl))
 
 
 class Prefetcher:
@@ -164,6 +164,31 @@ def sigma_weights(b16, b256):
     cell = cell / (cell.mean(axis=(1, 2), keepdims=True) + 1e-12)
     w = 0.5 + 0.5 * np.repeat(np.repeat(cell, 16, axis=1), 16, axis=2)
     return np.clip(w, 0.25, 4.0)[..., None].astype(np.float32)
+
+
+def pixel_weights(args, b16, b256, wl):
+    """Per-pixel loss weights (B, 256, 256, 1), from the enabled sources:
+    the sigma curriculum and/or the TEMPERED likelihood weight (T3 —
+    RAW-LIKELIHOOD research §8: w ∝ 1/var under the tag noise model,
+    censored rails). Each source is normalized to mean 1 per item and
+    blended half-uniform (the house 'nothing starves' rule); the product
+    is re-normalized and clipped to the stable envelope. Honest note:
+    the clip TEMPERS the likelihood — the physical 1/var spans decades
+    and destabilizes training raw; the claim is directional weighting on
+    the physical score, not literal NLL."""
+    ws = []
+    if args.sigma_curriculum:
+        ws.append(sigma_weights(b16, b256)[..., 0])
+    if args.likelihood_loss:
+        inv = wl / (wl.mean(axis=(1, 2), keepdims=True) + 1e-12)
+        ws.append(np.clip(0.5 + 0.5 * inv, 0.25, 4.0))
+    if not ws:
+        return None
+    w = ws[0]
+    for extra in ws[1:]:
+        w = w * extra
+    w = w / (w.mean(axis=(1, 2), keepdims=True) + 1e-12)
+    return mx.array(np.clip(w, 0.25, 4.0)[..., None].astype(np.float32))
 
 
 def losses(model, x, target_lab, seed_lab, base16, base256,
@@ -321,7 +346,7 @@ def probe_metrics(model, probe, with_battle=False, de_budget=0.03,
                   som_G=None, som_iters=0, som_eta=0.5, w_blue=0.0):
     """Mean hard metrics over the held-out probe scenes; optionally the
     battle-refined columns (model side)."""
-    x_np, t_np, _, b16_np, _ = probe
+    x_np, t_np, _, b16_np, _, _ = probe
     seeds = model_seeds(model, np.moveaxis(x_np, 1, -1), b16_np,
                         target_np=t_np, som_G=som_G, som_iters=som_iters,
                         som_eta=som_eta)
@@ -338,7 +363,7 @@ def probe_metrics(model, probe, with_battle=False, de_budget=0.03,
 
 
 def baseline_rows(probe, which='clean', with_battle=True, de_budget=0.03):
-    x_np, t_np, sl_np, b16_np, _ = probe
+    x_np, t_np, sl_np, b16_np, _, _ = probe
     rows = []
     for b in range(len(t_np)):
         t = t_np[b].reshape(-1, 3)
@@ -405,6 +430,10 @@ def main():
                          'serve gap exceeds this (divergence guard)')
     ap.add_argument('--sigma-curriculum', action='store_true',
                     help='weight ceiling/serve by coarse-vs-fine sigma')
+    ap.add_argument('--likelihood-loss', action='store_true',
+                    help='T3: weight the loss by the tag noise model '
+                         '(inverse variance, censored rails, tempered) — '
+                         'gradient descent toward the physical score')
     ap.add_argument('--battle-every', type=int, default=0,
                     help='every K steps, train toward the BA4 equilibrium')
     ap.add_argument('--w-battle', type=float, default=0.05)
@@ -536,15 +565,14 @@ def main():
                                               / args.steps)))
                 opt.learning_rate = lr_t
             if prefetcher is not None:
-                xs, tl, sl, b16, b256 = prefetcher.get()
+                xs, tl, sl, b16, b256, wl = prefetcher.get()
             else:
-                xs, tl, sl, b16, b256 = synth.batch(rng, n=args.batch,
-                                                    side=args.side)
+                xs, tl, sl, b16, b256, wl = synth.batch(rng, n=args.batch,
+                                                        side=args.side)
             x = mx.array(np.moveaxis(xs, 1, -1))
             t, slm = mx.array(tl), mx.array(sl)
             b16m, b256m = mx.array(b16), mx.array(b256)
-            pw = (mx.array(sigma_weights(b16, b256))
-                  if args.sigma_curriculum else None)
+            pw = pixel_weights(args, b16, b256, wl)
             battle_on = (args.battle_every > 0
                          and step % args.battle_every == 0
                          and (args.battle_tau_gate <= 0.0
