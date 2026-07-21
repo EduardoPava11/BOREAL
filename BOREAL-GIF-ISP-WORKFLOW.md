@@ -48,6 +48,42 @@ simulator-testability lever.
 >   G7 Gate coverage — the EvPlan mapping laws (P1-P4) have no
 >      emitted fixture; SceneKernel's ETTR planner is gated only by
 >      its ported self-test (registered 2026-07-18).
+> ═══ SESSION SUNSET — 2026-07-21 (master 1f4224e→HEAD, pushed to
+> github.com/EduardoPava11/BOREAL) ═══
+> The likelihood-ISP arc, three days, all spec-first and gate-green:
+> NT color law (magenta fixed + on-device self-check); P0 perf/
+> instrumentation + pooled Metal + msDirect fast path; ladder split
+> 512 render / 256 model (E1-measured); render-chroma split (screen
+> moiré 3.5× down) + portrait rotation; temporal-Bayer T1/T2 (TB laws,
+> σ_time; handheld ĝ = temporal floor); THE BIN-COMMUTATION THEOREM
+> (input contract by proof); NoiseProfile decoder + MLE fuse (D11
+> answered); V1 Accelerate engine (d96 champion, tolerance-pinned);
+> BOREALTests (G4+G5 CLOSED); tools/replay CLI; bundle v3 (preview.
+> html, binaries, manifest, stamps, log.txt); parallel decode (3.79×)
+> + temporal flatten; Run=Release (the -Onone diagnosis — all prior
+> device perf numbers were Debug artifacts); 6 device bundles
+> validated bit-exact Mac↔device; repo PUBLISHED (public) with the
+> ANE + unified-memory README; E6 capacity knee CONFIRMED fair (d96
+> stands); T3 likelihood loss (⚠ REGIME BOUNDARY: baselines moved);
+> E7 new-regime baseline (honest model-classic gap: 1.8×); Core AI
+> research; V3a EXECUTED — 12/12 ops ANE-preferred, 1.99 ms (35× V1).
+>
+> NEXT SESSION STARTS WITH:
+>  (1) RELEASE-build device capture — the honest perf baseline, the
+>      first slimmed schema-3 bundle, T0 corpus start (include a
+>      STATIC scene: the MLE-fuse promotion judgment + T1b wait on it,
+>      and screens/fabric for the σ_time tail);
+>  (2) nn/v1 record.py → bands.bin/maps.bin (schema-3 breaking change,
+>      registered in report.json note);
+>  (3) Xcode 27 beta when available → V3b: coreai-torch → .aimodel →
+>      Core AI Debugger PSNR (torch_host.py is the ready reference);
+>  (4) T4 judge on real bundles vs the E7 baseline (eq 1,529 vs
+>      classic 845.7 — the structural gap is the open problem).
+> Carried opens: G7 evplan golden; TF3 (G1 σ overlay, G2 burst→
+> preview); T1b motion-robust noise estimator; sub-black clamp
+> decision (measured 0.3-2.4%/frame); in_side 512 run (BC3-backed);
+> A19 ANE numbers (needs V3 wired in-app).
+>
 > FIXED 2026-07-19 — THE MAGENTA: every device render carried a strong
 > magenta cast (palette green deficit ≈ 2×). Root cause: iPhone DNGs
 > carry NO ForwardMatrix, and the ColorMatrix fallback (ex color.zig)
