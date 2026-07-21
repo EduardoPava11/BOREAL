@@ -109,8 +109,11 @@ struct CameraHomeView: View {
                     .padding(.bottom, 10)
             }
             if let gif = burst.gifURL {
-                ShareLink(items: [gif]) {
-                    Label("Share burst GIF", systemImage: "square.and.arrow.up")
+                // The bundle (burst.json + frames.bin + fractal.bin + GIF)
+                // when G6 assembly succeeded; the bare GIF otherwise.
+                ShareLink(items: burst.reportURLs.isEmpty ? [gif] : burst.reportURLs) {
+                    Label(burst.reportURLs.isEmpty ? "Share burst GIF" : "Share burst bundle",
+                          systemImage: "square.and.arrow.up")
                         .font(.mono(11))
                         .padding(.vertical, 6).padding(.horizontal, 12)
                         .background(.ultraThinMaterial, in: Capsule())

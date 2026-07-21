@@ -72,12 +72,25 @@ struct GifPreviewView: View {
             paletteGrid(report)
                 .padding(.horizontal, 60)
 
-            ShareLink(items: report.urls) {
-                Label("AirDrop report (\(report.urls.count) files)",
-                      systemImage: "square.and.arrow.up")
-                    .font(.mono(12))
-                    .padding(.vertical, 8).padding(.horizontal, 14)
-                    .background(.ultraThinMaterial, in: Capsule())
+            // THE PRODUCT: the cycle's 4 frames as one GIF (what the hero
+            // is animating), shareable alone — the burst-of-4 direction's
+            // first-class moment. The full bundle stays one row below.
+            HStack(spacing: 10) {
+                if let gif = report.urls.first(where: { $0.lastPathComponent == "cycle.gif" }) {
+                    ShareLink(items: [gif]) {
+                        Label("Share GIF", systemImage: "square.and.arrow.up")
+                            .font(.mono(12))
+                            .padding(.vertical, 8).padding(.horizontal, 14)
+                            .background(.ultraThinMaterial, in: Capsule())
+                    }
+                }
+                ShareLink(items: report.urls) {
+                    Label("AirDrop report (\(report.urls.count) files)",
+                          systemImage: "square.and.arrow.up")
+                        .font(.mono(12))
+                        .padding(.vertical, 8).padding(.horizontal, 14)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
             }
             Spacer(minLength: 8)
         }

@@ -6,7 +6,10 @@ import Foundation
 /// bit-exact against fixtures/multiscale_golden.json.
 extension BorealKernels {
 
-    static let allRungs = [16, 32, 64, 128, 256]
+    // 512 added 2026-07-19 (E1-extension: k=4 box means sub-JND on real
+    // scenes; k=2 rejected). 512 = RENDER ceiling (the GIF); 256 stays the
+    // MODEL ceiling (H2/N0/bell — the 256 rung is a stack prefix).
+    static let allRungs = [16, 32, 64, 128, 256, 512]
 
     static func msRungs(side: Int) -> [Int] {
         allRungs.filter { side % $0 == 0 && side / $0 >= 2 && (side / $0) % 2 == 0 }
@@ -94,6 +97,88 @@ extension BorealKernels {
             }
         }
     }
+
+    /// Per-frame fast path (BOREAL-METAL-PRECISION-WORKFLOW.md, latency):
+    /// the 64-frame render consumes ONLY the absolute seed rung (16², the
+    /// palette/fractal seed) and the absolute ceiling rung (the GIF frame).
+    /// msEncode's residual stack telescopes away exactly under msDecode
+    /// (MS3: prefix decode == THE rung demosaic; &- then &+ cancel mod 2³²),
+    /// so computing the two rungs directly is bit-identical to
+    /// encode→decode while skipping the middle rungs, the residual pass,
+    /// and the decode walks — 5 full mosaic passes become 2. Parity is
+    /// gate-checked against msEncode+msDecode on the multiscale fixture.
+    static func msSeedAndCeiling(mosaic: [Float], side: Int, cfa: UInt32,
+                                 camToPP: [Float], hasColor: Bool)
+        -> (rung: Int,
+            seedL: [Int32], seedA: [Int32], seedB: [Int32],
+            ceilL: [Int32], ceilA: [Int32], ceilB: [Int32])? {
+        let rungs = msRungs(side: side)
+        guard let seed = rungs.first, let ceil = rungs.last,
+              let planes = msDirect(mosaic: mosaic, side: side, cfa: cfa,
+                                    camToPP: camToPP, hasColor: hasColor,
+                                    rungs: [seed, ceil]),
+              let s = planes[seed], let c = planes[ceil] else { return nil }
+        return (ceil, s.L, s.a, s.b, c.L, c.a, c.b)
+    }
+
+    /// Direct computation of ARBITRARY ladder rungs (absolute planes) — the
+    /// generalized per-frame fast path. Each requested rung is its own
+    /// demosaic pass; by the MS3 telescope every rung is bit-identical to
+    /// msEncode→msDecode at that rung (gate-checked via msSeedAndCeiling,
+    /// which delegates here). The per-frame render requests
+    /// {seed, model 256, render ceiling} — 3 passes instead of the full
+    /// ladder + residualize + decode.
+    static func msDirect(mosaic: [Float], side: Int, cfa: UInt32,
+                         camToPP: [Float], hasColor: Bool, rungs req: [Int])
+        -> [Int: (L: [Int32], a: [Int32], b: [Int32])]? {
+        let ladder = msRungs(side: side)
+        guard !req.isEmpty, mosaic.count >= side * side,
+              req.allSatisfy({ ladder.contains($0) }) else { return nil }
+        let m: [Double] = hasColor && camToPP.count == 9
+            ? camToPP.map(Double.init)
+            : [1, 0, 0, 0, 1, 0, 0, 0, 1]
+        var out: [Int: (L: [Int32], a: [Int32], b: [Int32])] = [:]
+        for r in Set(req) {
+            var L = [Int32](repeating: 0, count: r * r)
+            var a = L, b = L
+            msComputeRung(mosaic: mosaic, side: side, cfa: cfa, m: m, rung: r,
+                          outL: &L, outA: &a, outB: &b, at: 0)
+            out[r] = (L, a, b)
+        }
+        return out
+    }
+
+    /// Nearest-neighbor plane upscale (Int32 twin of upscaleIndices, same
+    /// convention) — the RENDER-CHROMA split's transport: chroma decoded at
+    /// a coarse rung rides up to the render rung. replicate ≠ resample: no
+    /// new values are invented (block-constant; BOREALTests pins it).
+    static func upscalePlane(_ plane: [Int32], from r: Int, to target: Int) -> [Int32] {
+        guard target % r == 0, plane.count == r * r else { return plane }
+        let k = target / r
+        var out = [Int32](repeating: 0, count: target * target)
+        for y in 0..<target {
+            let sy = y / k
+            for x in 0..<target {
+                out[y * target + x] = plane[sy * r + x / k]
+            }
+        }
+        return out
+    }
+
+    /// The RENDER-CHROMA rung (2026-07-19, bundle-5 verdict): luma renders
+    /// at the render ceiling; a/b render from THIS rung, nearest-upscaled.
+    ///
+    /// Why (BOREAL-DEBAYER-MATH-RESEARCH.md): chroma is low-bandwidth
+    /// (Alleysson demultiplexing; all video ships subsampled chroma), and
+    /// each rung is its OWN demosaic, so the 128 rung's chroma comes from
+    /// 16× larger cells with exact carrier nulling — E1 measured its
+    /// worst-case chroma error ~10× below the 512 rung's. Measured on the
+    /// bundle-5 screen-moiré scene: HF chroma energy 840 → 237 (3.5×).
+    /// At phone distance 128-rung chroma sits below the Mullen chromatic
+    /// acuity cutoff — the split is perceptually transparent. Residual
+    /// fully-folded alias is the σ_time-gated suppressor's job (T4-judged,
+    /// not this constant).
+    static let renderChromaRung = 128
 
     /// Full residual-stack encode: pass 1 writes ABSOLUTE rungs at their
     /// offsets; pass 2 residualizes fine → coarse (coarser still absolute).

@@ -2,12 +2,12 @@
 // (nn/v1/export_model.py). The trained V1-H seed net ships as DATA:
 // magic 'V1HW', version 1, JSON config, tensor table, fp16 payload.
 //
-// SCOPE (honest): this is the PACKAGE + LOADER slice. The on-device
-// forward pass (conv kernels consuming these tensors) is the N4 ship
-// slice and does not exist yet — the classic path remains the product
-// path until it does (circuit A2: classic fallback forever). The
-// loader compiles into the gate's surface so the package format is
-// pinned by code, not prose.
+// SCOPE: the PACKAGE + LOADER slice. The forward pass landed
+// 2026-07-19 as V1HForward.swift (the V1 Accelerate engine —
+// encoder + palette slice, gate-pinned by tolerance parity against
+// nn/v1/forward_ref.py). The classic path remains the product path
+// until the battle judge promotes the model (circuit A2: classic
+// fallback forever).
 
 import Foundation
 

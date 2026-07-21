@@ -26,6 +26,8 @@ import Data.Ratio (denominator, numerator)
 import System.Directory (createDirectoryIfMissing)
 
 import Boreal.Battle
+import Boreal.BinContract
+import Boreal.FuseMLE
 import Boreal.PatchGrid
 import Boreal.Binomial
 import Boreal.ColorPath
@@ -37,6 +39,7 @@ import Boreal.GifTarget
 import Boreal.GifWire
 import Boreal.MultiScale
 import Boreal.Palette
+import Boreal.TemporalBayer
 
 outDir :: FilePath
 outDir = "../fixtures"
@@ -168,6 +171,39 @@ colorpathJson = jObj
                              quantizeLab (oklabFromProPhotoLinear (r, g, b))
                        in jInts [ql, qa, qb]) ]
       | (r, g, b) <- sampleTriples ])
+  , ("camera", jObj
+      [ ("conventions", jObj
+          [ ("nt",  jStr "NT law: composed camera->ProPhoto matrix maps AsShotNeutral to EQUAL channels (gray); relative spread < 1e-5")
+          , ("fm",  jStr "FM path: M = XYZ_TO_PROPHOTO_D50 * FM * diag(g/asn_r, 1, g/asn_b) — ForwardMatrix consumes WHITE-BALANCED camera")
+          , ("cm",  jStr "CM fallback (iPhone live path): camToXYZ = inv3(CM2 preferred); XYZw = camToXYZ*asn normalized Y=1; M = XYZ_TO_PROPHOTO_D50 * bradfordToD50(XYZw) * camToXYZ; NO wb diagonal (implicit WB — diag on an inverted CM = the 2026-07-19 magenta bug)")
+          , ("inv3", jStr "cofactor expansion, invDet = 1/det then multiply, op shapes pinned in Boreal.ColorPath; rationals: each language computes num/den itself in f64")
+          ])
+      , ("deviceNote", jStr "iPhone 17 Pro frame_1 2026-07-19: NO ForwardMatrix; CM1 = StdA, CM2 = D65; exact SRATIONAL/RATIONAL pairs, flattened [n0,d0,n1,d1,...]")
+      , ("deviceCM1rat", jInts (concat [ [fromIntegral n, fromIntegral d]
+                                       | (n, d) <- iphone17CM1R ]))
+      , ("deviceCM2rat", jInts (concat [ [fromIntegral n, fromIntegral d]
+                                       | (n, d) <- iphone17CM2R ]))
+      , ("deviceASNrat", jInts (concat [ [fromIntegral n, fromIntegral d]
+                                       | (n, d) <- iphone17ASNR ]))
+      , ("xyzToProphotoD50", jDbls (concat xyzToProphotoD50))
+      , ("bradfordCone",     jDbls (concat bradfordCone))
+      , ("d50White",         jDbls (let (x, y, z) = d50White in [x, y, z]))
+      , ("camToXYZ",   jDbls (concat (inv3 (ratToM3 iphone17CM2R))))
+      , ("camToPP_CM", jDbls (concat (cameraToProPhotoCM (ratToM3 iphone17CM2R)
+                                                         (ratToTriple iphone17ASNR))))
+      , ("camToPP_FMtest", jDbls (concat (cameraToProPhotoFM prophotoToXyzD50
+                                                             (ratToTriple iphone17ASNR))))
+      , ("neutralPP_CM", jDbls
+          (let (r, g, b) = apply3 (cameraToProPhotoCM (ratToM3 iphone17CM2R)
+                                                      (ratToTriple iphone17ASNR))
+                                  (ratToTriple iphone17ASNR)
+           in [r, g, b]))
+      , ("neutralPP_FM", jDbls
+          (let (r, g, b) = apply3 (cameraToProPhotoFM prophotoToXyzD50
+                                                      (ratToTriple iphone17ASNR))
+                                  (ratToTriple iphone17ASNR)
+           in [r, g, b]))
+      ])
   ]
   where
     cbrtInputs = [0, 1, 2, 8, 0.125, 0.001953125, 3.375, 65536]
@@ -464,6 +500,7 @@ geometryJson = jObj
   , ("quadsPerCellSide", show quadsPerCellSide)
   , ("rungs",            jInts rungs)
   , ("ceilingRung",      show ceilingRung)
+  , ("renderRung",       show renderRung)
   , ("burstFrames",      show burstFrames)
   , ("cycleFrames",      show cycleFrames)
   , ("cycles",           show cycles)
@@ -481,6 +518,79 @@ geometryJson = jObj
 
 -- ── Main ───────────────────────────────────────────────────────
 
+-- ── MleFuse fixture (MF laws — D11: inverse-variance bracket fuse) ─
+
+mlefuseJson :: String
+mlefuseJson = jObj
+  [ ("conventions", jObj
+      [ ("model", jStr "var(y) = S*y + O on the DNG-normalized signal (NoiseProfile tag 51041); x_i = y_i/e_i; w_i = e_i^2/(S_i*max(y_i,0) + O_i), ZERO when y_i >= clip; fused = sum(w*x)/sum(w); all censored -> darkest frame's x (first minimal e)")
+      , ("order", jStr "f64 end to end; sums accumulate in frame order, single left-fold from 0; expression shapes pinned in Boreal.FuseMLE")
+      , ("provenance", jStr "profiles are DEVICE FACTS: iPhone 17 Pro tag 51041 per frame, 2026-07-19 cycle (incl. the dual-conversion-gain break at ISO 1250); scene x dyadic k/4096 from the house LCG, s0 = 4242; observations y = e*x noise-free (censoring engages where e*x >= clip)")
+      ])
+  , ("clip",     show mfClip)
+  , ("ev",       jDbls mfEV)
+  , ("profiles", jDbls (concat [ [s, o] | (s, o) <- mfProfiles ]))
+  , ("lcgSeed",  show (4242 :: Int))
+  , ("scene",    jDbls mfScene)
+  , ("fused",    jDbls mfFused)
+  ]
+
+-- ── TemporalBayer fixture (TB laws — THE PIVOT's cycle statistics) ─
+
+temporalbayerJson :: String
+temporalbayerJson = jObj
+  [ ("conventions", jObj
+      [ ("stats", jStr "per rung bin, per channel: weighted mean mu = sum_j e_j*m_j / sum_j e_j and residual v = sum_j e_j*(m_j - mu)^2 / (J-1); channel means y-outer x-inner per cell, cells row-major, left-fold from 0; frame sums j ascending; f64 end to end (f32 mosaics widen exactly)")
+      , ("gain",  jStr "ghat = UPPER MEDIAN (sort ascending, index n/2) of v/(mu/N) over bins-ascending x channels R,G,B; N_R = N_B = (k/2)^2, N_G = 2(k/2)^2, k = side/rung EVEN (whole-Bayer-period law); mu <= 0 contributes ratio 0; UNCALIBRATED constant-factor estimator (see TB2)")
+      , ("d",     jStr "per bin: q1 = mR - mG, q2 = mB - mG; D = ((sum_j e_j*(q1_j - q1bar)^2)/((J-1)*(nR+nG)) + (sum_j e_j*(q2_j - q2bar)^2)/((J-1)*(nB+nG)))/2 with n_c = ghat*mu_c/N_c; V <= 0 gives D = 0; noise-only content -> D ~ 1, alias/chroma-motion -> D >> 1")
+      , ("sigmaTime", jStr "seed-grid aggregation: mean of D over each (rung/seed)^2 block, row-major")
+      , ("fixture", jStr "side 64 RGGB, 4 frames at EV [1,4,16,64], sub-pixel tremor shifts, shot noise var g0*scene/e_j via house LCG, EVERY sample quantized to k/4096 (exact in f32/f64/JSON); regions: x<32,y<32 gray zone plate (alias), x<32,y>=32 flat gray (quiet), x>=32 color ramp (equal slopes, constant offsets -> chroma exactly shift-invariant)")
+      ])
+  , ("side",    show tbSide)
+  , ("cfa",     show (0 :: Int))
+  , ("ceiling", show tbCeiling)
+  , ("seed",    show tbSeed)
+  , ("ev",      jDbls tbEV)
+  , ("g0",      show tbGain0)
+  , ("shifts",  jDbls (concat [ [dx, dy] | (dx, dy) <- tbShifts ]))
+  , ("mosaics", jArr (map jDbls tbFrames))
+  , ("muR",     jDbls (tbMuR tbFixtureStats))
+  , ("muG",     jDbls (tbMuG tbFixtureStats))
+  , ("muB",     jDbls (tbMuB tbFixtureStats))
+  , ("ghat",    show (tbGain tbFixtureStats))
+  , ("D",       jDbls (tbD tbFixtureStats))
+  , ("sigmaTime", jDbls (tbSigmaTime tbFixtureStats))
+  , ("medians", jObj
+      [ ("zone",  show (tbMedianOf tbZoneBins (tbD tbFixtureStats)))
+      , ("color", show (tbMedianOf tbColorBins (tbD tbFixtureStats)))
+      ])
+  ]
+
+-- ── BinContract fixture (BC laws — THE BIN-COMMUTATION THEOREM) ────
+
+bincontractJson :: String
+bincontractJson = jObj
+  [ ("conventions", jObj
+      [ ("theorem", jStr "BC2: cfaBin(S/(b*r)) . beta_b == cfaBin(S/r) EXACTLY in Q at every rung whose binned cell is a whole even quad count — the ladder factors through per-phase binning; beta_b is a sufficient statistic for the model rungs")
+      , ("binning", jStr "beta_b: binned[Y,X] = mean of the b^2 same-phase photosites in the aligned 2b x 2b block (phase preserved: a binned Bayer mosaic is a Bayer mosaic; b=2 is quad-binned sensor readout)")
+      , ("mosaic",  jStr "NOT stored — regenerate: side 64, value_k = ((s>>16) mod 4096)/4096, s0 = 24601, wrapping-u64 house LCG, k row-major (y,x); DYADIC => every f64 intermediate exact => both theorem sides compare BITWISE in the harness")
+      , ("noise",   jStr "HONEST BOUNDARY: the theorem settles the SIGNAL contract only; binning drops input noise ~b^2-fold vs native-scale synth training frames — a T3 training-distribution question, not an inference-mapping question")
+      ])
+  , ("side",    show bcSide)
+  , ("b",       show bcB)
+  , ("lcgSeed", show (24601 :: Int))
+  , ("binned",  jDbls (map fromRational (concat (binPhase bcB bcFixtureMosaic))))
+  , ("deviceContract", jObj
+      [ ("cropSide",   show (2048 :: Int))
+      , ("b",          show (4 :: Int))
+      , ("binnedSide", show (512 :: Int))
+      , ("inSide",     show (256 :: Int))
+      , ("modelRungs", jInts [16, 32, 64, 128, 256])
+      , ("renderRung", show (512 :: Int))
+      , ("note", jStr "phi(beta_4(crop)) = the encoder input: phase planes (CycleSet) of the 4x-binned 2048 crop; by BC2 its classic ladder at the model rungs is bit-for-bit the device ladder, and the render rung 512 is exactly the information binning drops")
+      ])
+  ]
+
 main :: IO ()
 main = do
   createDirectoryIfMissing True outDir
@@ -495,6 +605,9 @@ main = do
   emit "binomial_golden.json" binomialJson
   emit "battle_golden.json" battleJson
   emit "walk_golden.json" walkJson
+  emit "temporalbayer_golden.json" temporalbayerJson
+  emit "bincontract_golden.json" bincontractJson
+  emit "mlefuse_golden.json" mlefuseJson
   writeFile "../BOREAL/Kernels/SRGBTable.swift" srgbTableSwift
   putStrLn "  wrote ../BOREAL/Kernels/SRGBTable.swift (generated)"
   putStrLn "GOLDENS EMITTED"

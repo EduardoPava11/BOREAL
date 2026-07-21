@@ -35,15 +35,35 @@ simulator-testability lever.
 >   G4 Phase 4 — the round-trip exit law (decode-with-system-decoder ==
 >      our decode) is verified nowhere; verify-swift pins encode bytes
 >      against the golden but no harness runs a system decoder.
->   G5 Test program — BOREALTests target still absent; root
->      `make test-xcode` runs xcodebuild test against a project with no
->      test target.
->   G6 Circuit A3 — the 64-burst emits NO report bundle (only the
->      single-cycle path writes one); registered 2026-07-18, blocks
->      the corpus valve and the Mac-side model-vs-classic judge.
+>   G5 Test program — CLOSED 2026-07-19: BOREALTests target landed
+>      (kernel-core logic tests, camera-free, no app host): the spec
+>      gate's parity legs (NT, MleFuse, bin theorem, TB, V1 engine,
+>      ladder contract, ported self-tests) replay against bundled
+>      fixtures inside Xcode's build context; `make test-xcode` green.
+>   G6 Circuit A3 — CLOSED 2026-07-19: the 64-burst writes a report
+>      bundle (burst.json + frames.bin + fractal.bin + burst.gif; DNGs
+>      excluded — the 1.6 GB cliff) and the share surface offers it;
+>      see BOREAL-METAL-PRECISION-WORKFLOW.md P0. The corpus valve and
+>      the Mac-side judge now have their food.
 >   G7 Gate coverage — the EvPlan mapping laws (P1-P4) have no
 >      emitted fixture; SceneKernel's ETTR planner is gated only by
 >      its ported self-test (registered 2026-07-18).
+> FIXED 2026-07-19 — THE MAGENTA: every device render carried a strong
+> magenta cast (palette green deficit ≈ 2×). Root cause: iPhone DNGs
+> carry NO ForwardMatrix, and the ColorMatrix fallback (ex color.zig)
+> bolted the WB diagonal onto an INVERTED ColorMatrix1 — a composition
+> valid only for a true ForwardMatrix — applying white balance twice
+> (neutral → ProPhoto (1.78, 0.92, 1.70)). Fix is spec-first: Boreal.
+> ColorPath gained the camera→ProPhoto composition + THE NEUTRAL TEST
+> law (NT, CQ9/CQ10: composed matrix maps AsShotNeutral to gray;
+> illuminant-independent); fixture carries the device's exact CM1/CM2/
+> ASN rationals; oracle + Swift (Kernels/CameraMatrixKernel.swift)
+> verified bitwise; decoder now reads CM2/FM2, prefers FM2→FM1→CM2→CM1,
+> and the CM path does implicit WB (inv(CM)·asn = scene white, Bradford
+> → D50, NO wb diagonal). Device neutral now lands gray to 9.8e-8.
+> This bug predates the Swift port — it shipped in every render since
+> the Zig ISP; NT is the law that makes it unrepeatable.
+>
 > CLOSED 2026-07-18: the geometry contract now carries the
 > DEVICE-VERIFIED facts (decoded mosaic 4032x3024 — NOT the 4224
 > pre-crop tile raster — BGGR, black 528, white 4095, 12-bit; c386663)

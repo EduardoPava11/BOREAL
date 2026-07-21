@@ -51,6 +51,10 @@ extension BorealKernels {
         var fNumber: Float
         var camToPP: [Float]     // 9, row-major camera-native -> ProPhoto linear
         var hasColor: Bool
+        var noiseS: Double       // NoiseProfile scale (var(y) = S·y + O on the
+        var noiseO: Double       //   normalized signal); 0,0 = tag absent
+        var asn: (Double, Double, Double)  // exact AsShotNeutral (NT input)
+        var baselineExposure: Double       // stops (tag 50730); 0 = absent
         var samples: [UInt16]    // row-major, length = width * height
     }
 
@@ -146,66 +150,15 @@ extension BorealKernels {
     fileprivate enum DNGByteOrder { case little, big }
 
     // ========================================================================
-    // MARK: - color.zig excerpts (XYZ_TO_PROPHOTO / matmul3 / invert3)
+    // MARK: - camera → ProPhoto composition
     // ========================================================================
-
-    /// XYZ (D50) -> ProPhoto (ROMM) linear RGB. Inverse of the ROMM->XYZ matrix
-    /// (Lindbloom), row-major. Same literals as color.zig XYZ_TO_PROPHOTO.
-    fileprivate static let dngXYZToProPhoto: [Float] = [
-        1.3459434, -0.2556075, -0.0511118,
-       -0.5445988,  1.5081673,  0.0205351,
-        0.0000000,  0.0000000,  1.2118128,
-    ]
-
-    /// Multiply two row-major 3x3 matrices: C = A * B. (color.matmul3)
-    fileprivate static func dngMatmul3(_ a: [Float], _ b: [Float]) -> [Float] {
-        var c = [Float](repeating: 0, count: 9)
-        var i = 0
-        while i < 3 {
-            var j = 0
-            while j < 3 {
-                var s: Float = 0
-                var k = 0
-                while k < 3 { s += a[i * 3 + k] * b[k * 3 + j]; k += 1 }
-                c[i * 3 + j] = s
-                j += 1
-            }
-            i += 1
-        }
-        return c
-    }
-
-    /// Compose camera-native-RGB -> ProPhoto-linear:
-    ///   M = XYZ_TO_PROPHOTO * ForwardMatrix * diag(wb_r, wb_g, wb_b)
-    /// (color.cameraToProPhoto)
-    fileprivate static func dngCameraToProPhoto(_ forwardMatrix: [Float], _ wb: [Float]) -> [Float] {
-        let fmWB: [Float] = [
-            forwardMatrix[0] * wb[0], forwardMatrix[1] * wb[1], forwardMatrix[2] * wb[2],
-            forwardMatrix[3] * wb[0], forwardMatrix[4] * wb[1], forwardMatrix[5] * wb[2],
-            forwardMatrix[6] * wb[0], forwardMatrix[7] * wb[1], forwardMatrix[8] * wb[2],
-        ]
-        return dngMatmul3(dngXYZToProPhoto, fmWB)
-    }
-
-    /// Invert a row-major 3x3. Returns nil if singular. (color.invert3)
-    fileprivate static func dngInvert3(_ m: [Float]) -> [Float]? {
-        let det = m[0] * (m[4] * m[8] - m[5] * m[7]) -
-            m[1] * (m[3] * m[8] - m[5] * m[6]) +
-            m[2] * (m[3] * m[7] - m[4] * m[6])
-        if abs(det) < 1.0e-12 { return nil }
-        let invDet: Float = 1.0 / det
-        return [
-            (m[4] * m[8] - m[5] * m[7]) * invDet,
-            (m[2] * m[7] - m[1] * m[8]) * invDet,
-            (m[1] * m[5] - m[2] * m[4]) * invDet,
-            (m[5] * m[6] - m[3] * m[8]) * invDet,
-            (m[0] * m[8] - m[2] * m[6]) * invDet,
-            (m[2] * m[3] - m[0] * m[5]) * invDet,
-            (m[3] * m[7] - m[4] * m[6]) * invDet,
-            (m[1] * m[6] - m[0] * m[7]) * invDet,
-            (m[0] * m[4] - m[1] * m[3]) * invDet,
-        ]
-    }
+    //
+    // Lives in CameraMatrixKernel.swift (Boreal.ColorPath CQ9/CQ10 — the NT
+    // law), gate-verified bitwise against colorpath_golden.json. The old
+    // color.zig-lineage Float composition applied the WB diagonal to an
+    // INVERTED ColorMatrix (valid only for a ForwardMatrix) — white balance
+    // twice = the 2026-07-19 device magenta. Retired here; history + the
+    // archive branches keep it.
 
     // ========================================================================
     // MARK: - ljpeg.zig port
@@ -720,8 +673,12 @@ extension BorealKernels {
         static let exposureTime: UInt16              = 33434  // RATIONAL seconds
         static let fnumber: UInt16                   = 33437  // RATIONAL
         static let iso: UInt16                       = 34855  // SHORT/LONG ISOSpeedRatings
-        static let colorMatrix1: UInt16              = 50721  // SRATIONAL[9] — XYZ(D65)->camera
-        static let forwardMatrix1: UInt16            = 50964  // SRATIONAL[9] — camera->XYZ(D50)
+        static let noiseProfile: UInt16              = 51041  // DOUBLE[2 or 2·planes] — var(y) = S·y + O
+        static let baselineExposure: UInt16          = 50730  // SRATIONAL[1] — maker's display-lift hint, stops
+        static let colorMatrix1: UInt16              = 50721  // SRATIONAL[9] — XYZ(illum1, StdA)->camera
+        static let colorMatrix2: UInt16              = 50722  // SRATIONAL[9] — XYZ(illum2, D65)->camera
+        static let forwardMatrix1: UInt16            = 50964  // SRATIONAL[9] — cameraWB->XYZ(D50), illum1
+        static let forwardMatrix2: UInt16            = 50965  // SRATIONAL[9] — cameraWB->XYZ(D50), illum2
     }
 
     fileprivate static let dngCFAPhotometric: UInt32 = 32803
@@ -770,9 +727,15 @@ extension BorealKernels {
         var wbR: Float = 1.0
         let wbG: Float = 1.0  // green is the reference; never reassigned
         var wbB: Float = 1.0
+        var asn: (Double, Double, Double) = (1, 1, 1)  // exact AsShotNeutral (NT input)
+        var noiseS = 0.0                    // NoiseProfile (0,0 = absent)
+        var noiseO = 0.0
+        var baselineExposure = 0.0          // stops; 0 = absent
         var exifIfdOff: UInt32 = 0          // EXIF SubIFD offset (tag 34665)
-        var forwardMatrix: [Float]? = nil   // camera->XYZ(D50), preferred
-        var colorMatrix: [Float]? = nil     // XYZ(D65)->camera, inverse fallback
+        var forwardMatrix1: [Double]? = nil // cameraWB->XYZ(D50), illum1
+        var forwardMatrix2: [Double]? = nil // cameraWB->XYZ(D50), illum2 (preferred)
+        var colorMatrix1: [Double]? = nil   // XYZ(StdA)->camera, fallback of the fallback
+        var colorMatrix2: [Double]? = nil   // XYZ(D65)->camera, the iPhone live path
 
         var stripOffsetsEntry: DNGEntry? = nil
         var stripByteCountsEntry: DNGEntry? = nil
@@ -829,22 +792,53 @@ extension BorealKernels {
                 cropW = vals.0
                 cropH = vals.1
             case DNGTag.asShotNeutral:
-                // RATIONAL[3] camera-neutral. WB multiplier = green/channel.
-                // Unreadable -> leave neutral (1,1,1).
-                if let asn = try? dngReadRational3(bytes, e, order) {
-                    let g = asn[1] > 1.0e-6 ? asn[1] : 1.0
-                    if asn[0] > 1.0e-6 { wbR = g / asn[0] }
-                    if asn[2] > 1.0e-6 { wbB = g / asn[2] }
+                // RATIONAL[3] camera-neutral, kept EXACT in f64 (the NT
+                // law's input). WB multiplier = green/channel (f32, the
+                // ETTR planner's view). Unreadable -> leave neutral (1,1,1).
+                if let a = try? dngReadRational3(bytes, e, order) {
+                    let g = a[1] > 1.0e-6 ? a[1] : 1.0
+                    if a[0] > 1.0e-6 { wbR = Float(g / a[0]) }
+                    if a[2] > 1.0e-6 { wbB = Float(g / a[2]) }
                     // wbG stays 1 (green is the reference)
+                    if a[0] > 1.0e-6, a[1] > 1.0e-6, a[2] > 1.0e-6 {
+                        asn = (a[0], a[1], a[2])
+                    }
                 }
             // The SubIFD pointer can appear in any entry order; record the
             // offset and parse the SubIFD after the IFD0 loop closes.
             case DNGTag.exifIfdPointer: exifIfdOff = e.inlineU32(order)
-            // Colour matrices (SRATIONAL[9]). ForwardMatrix preferred;
-            // ColorMatrix is the inverse-fallback. Unreadable -> nil ->
+            // Colour matrices (SRATIONAL[9]). ForwardMatrix preferred
+            // (illum2/D65 over illum1/StdA); ColorMatrix is the fallback —
+            // iPhone DNGs carry ONLY CM1+CM2. Unreadable -> nil ->
             // camera-native passthrough downstream.
-            case DNGTag.forwardMatrix1: forwardMatrix = try? dngReadSRational9(bytes, e, order)
-            case DNGTag.colorMatrix1:   colorMatrix = try? dngReadSRational9(bytes, e, order)
+            case DNGTag.noiseProfile:
+                // DNG 1.4 NoiseProfile: the sensor's calibrated Poisson-
+                // Gaussian model, per capture (Apple writes it per frame —
+                // including the dual-conversion-gain break; RAW-LIKELIHOOD
+                // research doc §5/§7). First (S, O) pair; per-plane variants
+                // collapse to plane 0 (iPhone writes a single pair anyway).
+                if e.type == 12, e.count >= 2, bytes.count >= Int(e.valueOff) + 16 {
+                    let s = dngReadF64(bytes, Int(e.valueOff), order)
+                    let o = dngReadF64(bytes, Int(e.valueOff) + 8, order)
+                    if s > 0, o >= 0, s.isFinite, o.isFinite {
+                        noiseS = s
+                        noiseO = o
+                    }
+                }
+            case DNGTag.baselineExposure:
+                // SRATIONAL[1], the maker's calibrated display-lift hint in
+                // stops (Apple writes it per frame). Diagnostic only — the
+                // ISP stays scene-linear; whether the GIF applies a lift is
+                // a product decision.
+                if e.type == 10, e.count >= 1, bytes.count >= Int(e.valueOff) + 8 {
+                    let num = Int32(bitPattern: dngReadU32(bytes, Int(e.valueOff), order))
+                    let den = Int32(bitPattern: dngReadU32(bytes, Int(e.valueOff) + 4, order))
+                    if den != 0 { baselineExposure = Double(num) / Double(den) }
+                }
+            case DNGTag.forwardMatrix1: forwardMatrix1 = try? dngReadSRational9(bytes, e, order)
+            case DNGTag.forwardMatrix2: forwardMatrix2 = try? dngReadSRational9(bytes, e, order)
+            case DNGTag.colorMatrix1:   colorMatrix1 = try? dngReadSRational9(bytes, e, order)
+            case DNGTag.colorMatrix2:   colorMatrix2 = try? dngReadSRational9(bytes, e, order)
             default: break
             }
             i += 1
@@ -895,18 +889,22 @@ extension BorealKernels {
         if black == 0 && bits == 14 { black = 528 }     // iPhone 17 Pro typical
         if white == 0 { white = (UInt32(1) << bits) - 1 }
 
-        // Compose the camera-native -> ProPhoto-linear matrix. Prefer
-        // ForwardMatrix (camera->XYZ D50); else invert ColorMatrix (XYZ->camera)
-        // as a fallback; else leave camera-native (hasColor=false -> caller
-        // embeds no ICC, no mis-tag).
-        let wb3: [Float] = [wbR, wbG, wbB]
+        // Compose the camera-native -> ProPhoto-linear matrix (NT law:
+        // AsShotNeutral MUST land on ProPhoto gray). ForwardMatrix path
+        // when present (FM2/D65 preferred); else the ColorMatrix fallback
+        // (CM2/D65 preferred — the iPhone live path: implicit WB via the
+        // scene white + Bradford to D50, NO wb diagonal); else camera-native
+        // (hasColor=false -> caller embeds no ICC, no mis-tag). Math in f64
+        // (spec/Boreal/ColorPath.hs), rounded to f32 once, here.
         var camToPP: [Float] = [1, 0, 0, 0, 1, 0, 0, 0, 1]
         var hasColor = false
-        if let fm = forwardMatrix {
-            camToPP = dngCameraToProPhoto(fm, wb3)
+        if let fm = forwardMatrix2 ?? forwardMatrix1,
+           let m = BorealKernels.cameraToProPhotoFM(fm, asn: asn) {
+            camToPP = m.map(Float.init)
             hasColor = true
-        } else if let cm = colorMatrix, let camToXYZ = dngInvert3(cm) {
-            camToPP = dngCameraToProPhoto(camToXYZ, wb3)
+        } else if let cm = colorMatrix2 ?? colorMatrix1,
+                  let m = BorealKernels.cameraToProPhotoCM(cm, asn: asn) {
+            camToPP = m.map(Float.init)
             hasColor = true
         }
 
@@ -1068,6 +1066,10 @@ extension BorealKernels {
             fNumber: fnumber,
             camToPP: camToPP,
             hasColor: hasColor,
+            noiseS: noiseS,
+            noiseO: noiseO,
+            asn: asn,
+            baselineExposure: baselineExposure,
             samples: outSamples
         )
     }
@@ -1175,40 +1177,42 @@ extension BorealKernels {
         return Float(num) / Float(den)
     }
 
-    /// Read a count-3 RATIONAL tag (e.g., AsShotNeutral) as three Float ratios.
+    /// Read a count-3 RATIONAL tag (e.g., AsShotNeutral) as three f64 ratios
+    /// (num/den in Double — the exact value every spec language computes).
     /// Always out-of-line (3 rationals = 24 bytes).
     fileprivate static func dngReadRational3(_ bytes: [UInt8], _ e: DNGEntry,
-                                             _ order: DNGByteOrder) throws -> [Float] {
+                                             _ order: DNGByteOrder) throws -> [Double] {
         if e.count != 3 || e.type != 5 { throw DNGError.missingTag }
         let base = Int(e.valueOff)
         if bytes.count < base + 24 { throw DNGError.shortRead }
-        var out = [Float](repeating: 0, count: 3)
+        var out = [Double](repeating: 0, count: 3)
         var k = 0
         while k < 3 {
             let num = dngReadU32(bytes, base + k * 8, order)
             let den = dngReadU32(bytes, base + k * 8 + 4, order)
-            out[k] = den == 0 ? 0 : Float(num) / Float(den)
+            out[k] = den == 0 ? 0 : Double(num) / Double(den)
             k += 1
         }
         return out
     }
 
-    /// Read a count-9 SRATIONAL tag (ColorMatrix1 / ForwardMatrix1) as a
-    /// row-major [Float] of 9. SRATIONAL = signed LONG num / signed LONG den;
-    /// 9 of them = 72 bytes, always out-of-line. Throws (caught to nil by the
-    /// caller) on any unreadable condition so a malformed matrix degrades to
-    /// camera-native.
+    /// Read a count-9 SRATIONAL tag (ColorMatrix / ForwardMatrix) as a
+    /// row-major [Double] of 9 (num/den in f64 — the exact value every spec
+    /// language computes; the composition math is normative in f64).
+    /// SRATIONAL = signed LONG num / signed LONG den; 9 of them = 72 bytes,
+    /// always out-of-line. Throws (caught to nil by the caller) on any
+    /// unreadable condition so a malformed matrix degrades to camera-native.
     fileprivate static func dngReadSRational9(_ bytes: [UInt8], _ e: DNGEntry,
-                                              _ order: DNGByteOrder) throws -> [Float] {
+                                              _ order: DNGByteOrder) throws -> [Double] {
         if e.count != 9 || e.type != 10 { throw DNGError.missingTag }
         let base = Int(e.valueOff)
         if bytes.count < base + 72 { throw DNGError.shortRead }
-        var out = [Float](repeating: 0, count: 9)
+        var out = [Double](repeating: 0, count: 9)
         var k = 0
         while k < 9 {
             let num = Int32(bitPattern: dngReadU32(bytes, base + k * 8, order))
             let den = Int32(bitPattern: dngReadU32(bytes, base + k * 8 + 4, order))
-            out[k] = den == 0 ? 0 : Float(num) / Float(den)
+            out[k] = den == 0 ? 0 : Double(num) / Double(den)
             k += 1
         }
         return out
@@ -1239,6 +1243,23 @@ extension BorealKernels {
         case .little: return (hi << 8) | lo
         case .big:    return (lo << 8) | hi
         }
+    }
+
+    /// 8-byte IEEE double (TIFF type 12), byte-order aware.
+    fileprivate static func dngReadF64(_ bytes: [UInt8], _ offset: Int,
+                                       _ order: DNGByteOrder) -> Double {
+        var bits: UInt64 = 0
+        switch order {
+        case .little:
+            for k in stride(from: 7, through: 0, by: -1) {
+                bits = (bits << 8) | UInt64(bytes[offset + k])
+            }
+        case .big:
+            for k in 0..<8 {
+                bits = (bits << 8) | UInt64(bytes[offset + k])
+            }
+        }
+        return Double(bitPattern: bits)
     }
 
     fileprivate static func dngReadU32(_ bytes: [UInt8], _ offset: Int,

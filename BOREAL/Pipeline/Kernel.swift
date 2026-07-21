@@ -24,6 +24,10 @@ enum Kernel {
         var fNumber: Float        // 0 = absent (cancels)
         var camToPP: [Float]      // camera-native → ProPhoto-linear 3×3 (row-major, 9)
         var hasColor: Bool        // false → camToPP identity, no colour data
+        var noiseS: Double        // DNG NoiseProfile: var(y) = S·y + O on the
+        var noiseO: Double        //   normalized signal; (0,0) = tag absent
+        var asn: (Double, Double, Double)  // exact AsShotNeutral (NT input)
+        var baselineExposure: Double       // stops; maker's display-lift hint
         var samples: [UInt16]
     }
 
@@ -64,7 +68,9 @@ enum Kernel {
 
     /// Decode one naked-Bayer DNG (pure-Swift TIFF/LJPEG decoder).
     static func decodeDNG(_ data: Data) -> (frame: Frame?, status: Int32) {
-        let (mosaic, status) = BorealKernels.decodeDNG(data)
+        let (mosaic, status) = Perf.shared.time("decodeDNG") {
+            BorealKernels.decodeDNG(data)
+        }
         guard let m = mosaic else {
             blog.error("decodeDNG failed: \(data.count) bytes → status \(status) (\(Self.statusName(status), privacy: .public))")
             return (nil, status)
@@ -73,6 +79,8 @@ enum Kernel {
                       black: m.black, white: m.white, wb: m.wb,
                       exposureTime: m.exposureTime, iso: m.iso, fNumber: m.fNumber,
                       camToPP: m.camToPP, hasColor: m.hasColor,
+                      noiseS: m.noiseS, noiseO: m.noiseO,
+                      asn: m.asn, baselineExposure: m.baselineExposure,
                       samples: m.samples), 0)
     }
 
@@ -86,12 +94,35 @@ enum Kernel {
 
     /// Fuse 4 same-geometry frames into one scene-linear f32 mosaic (the
     /// cycle's analysis reference; EV-aware via EXIF).
+    ///
+    /// MLE path (D11, MF laws): when every frame carries a DNG NoiseProfile,
+    /// weights are the sensor's own inverse variance (censored at clip) —
+    /// gradient descent on the physical likelihood. The knee/clip heuristic
+    /// remains the gated fallback when any profile is absent (circuit A2).
+    /// Which fuse the facade will choose for these frames — surfaced into
+    /// report bundles so device testing can VERIFY the MLE path engaged
+    /// (profiles parsed) without a debugger.
+    static func fuseIsMLE(_ frames: [Frame]) -> Bool {
+        frames.count == 4 && frames.allSatisfy { $0.noiseS > 0 && $0.noiseO > 0 }
+    }
+
     static func fuse(_ frames: [Frame]) -> [Float]? {
         guard frames.count == 4 else { return nil }
         let ev = relativeExposures(frames)
-        return BorealKernels.fuse(frames: frames.map(\.samples),
-                                  black: frames[0].black, white: frames[0].white,
-                                  exposures: ev, knee: 0.90, clip: 0.98)
+        if fuseIsMLE(frames) {
+            return Perf.shared.time("fuseMLE") {
+                BorealKernels.fuseMLE(frames: frames.map(\.samples),
+                                      black: frames[0].black, white: frames[0].white,
+                                      exposures: ev,
+                                      profiles: frames.map { (s: $0.noiseS, o: $0.noiseO) },
+                                      clip: 0.98)
+            }
+        }
+        return Perf.shared.time("fuse") {
+            BorealKernels.fuse(frames: frames.map(\.samples),
+                               black: frames[0].black, white: frames[0].white,
+                               exposures: ev, knee: 0.90, clip: 0.98)
+        }
     }
 
     // ── EV planning (Phase 2: the inter-cycle ETTR loop) ───────────────────
@@ -109,8 +140,10 @@ enum Kernel {
     }
 
     static func normalizeMosaic(_ f: Frame, invE: Float) -> [Float] {
-        BorealKernels.normalizeMosaic(samples: f.samples, black: f.black,
-                                      white: f.white, invE: invE)
+        Perf.shared.time("normalizeMosaic") {
+            BorealKernels.normalizeMosaic(samples: f.samples, black: f.black,
+                                          white: f.white, invE: invE)
+        }
     }
 
     // ── Crop geometry (CS1/CS6/CS7, gate-verified vs geometry.json) ────────
@@ -132,12 +165,31 @@ enum Kernel {
     static func msEncode(mosaic: [Float], side: Int, cfa: UInt32,
                          camToPP: [Float], hasColor: Bool)
         -> (L: [Int32], a: [Int32], b: [Int32])? {
-        BorealKernels.msEncode(mosaic: mosaic, side: side, cfa: cfa,
-                               camToPP: camToPP, hasColor: hasColor)
+        Perf.shared.time("msEncode") {
+            BorealKernels.msEncode(mosaic: mosaic, side: side, cfa: cfa,
+                                   camToPP: camToPP, hasColor: hasColor)
+        }
     }
 
     static func msDecode(_ bands: [Int32], mosaicSide: Int, rung: Int) -> [Int32]? {
-        BorealKernels.msDecode(bands, mosaicSide: mosaicSide, rung: rung)
+        Perf.shared.time("msDecode") {
+            BorealKernels.msDecode(bands, mosaicSide: mosaicSide, rung: rung)
+        }
+    }
+
+    /// Per-frame fast path, generalized: direct computation of the requested
+    /// ladder rungs — each bit-identical to msEncode→msDecode at that rung
+    /// (MS3 telescope, gate-checked). The render loop requests
+    /// {seed, model 256, render ceiling}: 3 mosaic passes instead of the
+    /// full ladder + residualize + decode.
+    static func msDirect(mosaic: [Float], side: Int, cfa: UInt32,
+                         camToPP: [Float], hasColor: Bool, rungs: [Int])
+        -> [Int: (L: [Int32], a: [Int32], b: [Int32])]? {
+        Perf.shared.time("msDirect") {
+            BorealKernels.msDirect(mosaic: mosaic, side: side, cfa: cfa,
+                                   camToPP: camToPP, hasColor: hasColor,
+                                   rungs: rungs)
+        }
     }
 
     static func sigmaGrid(mosaicSide: Int, channels: [[Int32]]) -> [Float] {
@@ -149,11 +201,15 @@ enum Kernel {
     static func indexMap(L: [Int32], a: [Int32], b: [Int32],
                          palL: [Int32], palA: [Int32], palB: [Int32]) -> [UInt8] {
         // Metal when available (bit-identical — integer math, same tie rule,
-        // gate-proven); CPU reference otherwise.
-        MetalIndexMapper.shared?.map(L: L, a: a, b: b,
-                                     palL: palL, palA: palA, palB: palB)
-            ?? BorealKernels.indexMap(L: L, a: a, b: b,
-                                      palL: palL, palA: palA, palB: palB)
+        // gate-proven); CPU reference otherwise. GPU-side ms is recorded by
+        // the mapper itself; this interval is the end-to-end (dispatch +
+        // wait + readback) cost the pipeline actually pays.
+        Perf.shared.time("indexMap") {
+            MetalIndexMapper.shared?.map(L: L, a: a, b: b,
+                                         palL: palL, palA: palA, palB: palB)
+                ?? BorealKernels.indexMap(L: L, a: a, b: b,
+                                          palL: palL, palA: palA, palB: palB)
+        }
     }
 
     static func oklabQ16ToSRGB8(L: [Int32], a: [Int32], b: [Int32]) -> [UInt8] {
@@ -162,12 +218,39 @@ enum Kernel {
 
     static func gifEncode(frames: [[UInt8]], side: Int, paletteRGB: [UInt8],
                           delayCs: Int) -> Data? {
-        BorealKernels.gifEncode(frames: frames, side: side, gct: paletteRGB,
-                                delayCs: delayCs)
+        Perf.shared.time("gifEncode") {
+            BorealKernels.gifEncode(frames: frames, side: side, gct: paletteRGB,
+                                    delayCs: delayCs)
+        }
     }
 
     static func upscaleIndices(_ indices: [UInt8], from r: Int, to target: Int) -> [UInt8] {
         BorealKernels.upscaleIndices(indices, from: r, to: target)
+    }
+
+    // ── Temporal statistics (TB laws — THE PIVOT, T2 wiring) ───────────────
+
+    /// Per-rung per-channel cell means of one EV-normalized frame — the
+    /// per-frame half of the cycle statistics (computed while the frame is
+    /// still alive so the burst never holds 4 mosaics for stats).
+    static func tbChannelMeans(_ mosaic: [Float], side: Int, rung: Int,
+                               cfa: UInt32) -> (r: [Double], g: [Double], b: [Double]) {
+        Perf.shared.time("tbChannelMeans") {
+            BorealKernels.tbChannelMeans(mosaic, side: side, rung: rung, cfa: cfa)
+        }
+    }
+
+    /// The cycle's noise meter ĝ, alias discriminator D, and σ_time — from
+    /// precomputed per-frame means (gate-verified bitwise via the frames
+    /// entry point, which delegates to this same code).
+    static func temporalStats(perFrameMeans: [(r: [Double], g: [Double], b: [Double])],
+                              cellSide: Int, exposures: [Double], rung: Int,
+                              seed: Int) -> BorealKernels.TemporalStats? {
+        Perf.shared.time("temporalStats") {
+            BorealKernels.temporalStats(perFrameMeans: perFrameMeans,
+                                        cellSide: cellSide, exposures: exposures,
+                                        rung: rung, seed: seed)
+        }
     }
 
     // ── Fractal record + temporal deltas (N0: the training food) ───────────

@@ -122,6 +122,34 @@ lawNormalize = anchors && affine
         affine  = and [ n r1 - n r2 == (r1 - r2) / (white - black)
                       | r1 <- [600, 1000, 8000], r2 <- [700, 12000] ]
 
+-- CQ9/CQ10: THE NEUTRAL TEST (NT) — the composed camera→ProPhoto
+-- matrix must map AsShotNeutral to EQUAL channels (gray).  The one
+-- law that catches every WB/matrix composition error; the 2026-07-19
+-- device magenta (neutral → (1.78, 0.92, 1.70)) violated it.
+
+ntSpread :: M3 -> (Double, Double, Double) -> Double
+ntSpread m asn = (maximum cs - minimum cs) / maximum cs
+  where (r, g, b) = apply3 m asn
+        cs = [r, g, b]
+
+-- CQ9: FM path.  A conforming ForwardMatrix has rows summing to D50
+-- white — prophotoToXyzD50 is exactly such a matrix, so it serves as
+-- the synthetic conforming FM; the device ASN and a dyadic ASN both
+-- must land gray.
+lawNeutralFM :: Bool
+lawNeutralFM =
+  and [ ntSpread (cameraToProPhotoFM prophotoToXyzD50 asn) asn < 1.0e-5
+      | asn <- [ratToTriple iphone17ASNR, (0.5, 1, 0.625)] ]
+
+-- CQ10: CM fallback — the LIVE device path.  Both calibrations (StdA
+-- and D65) must land gray with the real iPhone 17 Pro tags: NT is
+-- illuminant-independent (the Bradford step absorbs the difference).
+lawNeutralCM :: Bool
+lawNeutralCM =
+  and [ ntSpread (cameraToProPhotoCM (ratToM3 cm) asn) asn < 1.0e-5
+      | cm <- [iphone17CM1R, iphone17CM2R] ]
+  where asn = ratToTriple iphone17ASNR
+
 -- ── Harness ────────────────────────────────────────────────────
 
 main :: IO ()
@@ -138,6 +166,8 @@ main = do
     , ("CQ6 normalization: black→0, white→1, affine (ℚ)",  lawNormalize)
     , ("CQ7 box reduce: constants exact, 1-homogeneous",   lawBoxReduceBasics)
     , ("CQ8 box reduce f64 == exact ℚ mean on dyadics",    lawBoxReduceExact)
+    , ("CQ9 NT: ForwardMatrix path maps neutral to gray",  lawNeutralFM)
+    , ("CQ10 NT: ColorMatrix fallback maps neutral to gray (device tags)", lawNeutralCM)
     ]
 
 checkAll :: [(String, Bool)] -> IO ()

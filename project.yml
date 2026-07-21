@@ -19,6 +19,36 @@ settings:
     GENERATE_INFOPLIST_FILE: NO
 
 targets:
+  # G5 closed 2026-07-19: kernel-core logic tests, camera-free. The test
+  # bundle compiles BOREAL/Kernels DIRECTLY (no app host, no launch, no
+  # TEST_HOST) and replays the spec gate's parity legs against bundled
+  # fixtures inside Xcode's build context — `make test-xcode` is now a
+  # real second gate.
+  BOREALTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: BOREALTests
+      - path: BOREAL/Kernels
+      - path: fixtures/colorpath_golden.json
+        buildPhase: resources
+      - path: fixtures/mlefuse_golden.json
+        buildPhase: resources
+      - path: fixtures/bincontract_golden.json
+        buildPhase: resources
+      - path: fixtures/temporalbayer_golden.json
+        buildPhase: resources
+      - path: fixtures/geometry.json
+        buildPhase: resources
+      - path: fixtures/v1h_forward_golden.json
+        buildPhase: resources
+      - path: fixtures/v1h_d96.weights.bin
+        buildPhase: resources
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.daniel.boreal.tests
+
   BOREAL:
     type: application
     platform: iOS
@@ -60,3 +90,25 @@ targets:
         # The kernel core is pure Swift (BOREAL/Kernels/, enum BorealKernels)
         # — Phase 5 migration complete; the Zig tree and its link/pre-build
         # wiring are gone.
+
+# Explicit scheme (2026-07-20): RUN IS RELEASE. The debug-build diagnosis
+# showed -Onone inflating device kernels ~25× — every capture bundle's perf
+# block was measuring the compiler flag, not the pipeline. Xcode's Run now
+# launches Release (BundleStamp's "configuration" field confirms it in each
+# bundle); tests stay Debug on purpose (bounds checks earn their keep there).
+schemes:
+  BOREAL:
+    build:
+      targets:
+        BOREAL: all
+        BOREALTests: [test]
+    run:
+      config: Release
+    test:
+      config: Debug
+      targets:
+        - BOREALTests
+    profile:
+      config: Release
+    archive:
+      config: Release

@@ -10,7 +10,7 @@ FLAGS  = -W -package-env=-
 
 GEOMETRY  = geometry/CropShape.hs
 PALETTE   = palette/PaletteGrid.hs
-EXPOSURE  = exposure/EvNormalize.hs exposure/EvPlan.hs
+EXPOSURE  = exposure/EvNormalize.hs exposure/EvPlan.hs exposure/MleFuseLaws.hs
 COLORPATH = colorpath/ColorQuant.hs
 GIFTARGET = giftarget/GifIndex.hs
 MULTISCALE = multiscale/MultiScaleLaws.hs
@@ -20,10 +20,12 @@ BINOMIAL  = binomial/BinomialLaws.hs
 HIERARCHY = hierarchy/HierarchyLaws.hs
 THEOREM   = theorem/MaxSignalLaws.hs
 DITHERWALK = ditherwalk/DitherWalkLaws.hs
+TEMPORALBAYER = temporalbayer/TemporalBayerLaws.hs
+BINCONTRACT = bincontract/BinContractLaws.hs
 TESSGRID  = tessgrid/TessGridLaws.hs
 BATTLE    = battle/BattleLaws.hs
 
-CORE = $(GEOMETRY) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM) $(DITHERWALK) $(TESSGRID) $(BATTLE)
+CORE = $(GEOMETRY) $(PALETTE) $(EXPOSURE) $(COLORPATH) $(GIFTARGET) $(MULTISCALE) $(GIFWIRE) $(CYCLESET) $(BINOMIAL) $(HIERARCHY) $(THEOREM) $(DITHERWALK) $(TESSGRID) $(BATTLE) $(TEMPORALBAYER) $(BINCONTRACT)
 
 # ── Targets ──────────────────────────────────────────────
 

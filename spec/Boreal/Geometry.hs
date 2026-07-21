@@ -66,12 +66,22 @@ cellSide = canonicalSide `div` gridSide     -- 128
 quadsPerCellSide :: Int       -- Bayer quads per latent-cell side
 quadsPerCellSide = cellSide `div` 2         -- 64
 
--- The full ladder (decided 2026-07-17): 16→32→64→128→256.
+-- The full ladder (2026-07-17; RENDER rung 512 added 2026-07-19 on
+-- the E1-extension verdict — k=4 sub-JND on real scenes, k=2
+-- rejected): 16→32→64→128→256→512.
 rungs :: [Int]
-rungs = [16, 32, 64, 128, 256]
+rungs = [16, 32, 64, 128, 256, 512]
 
+-- MODEL ceiling: the H2/N0/bell domain — gridSide² (the fractal
+-- identity 256 = 16²). The model's food stays here; the 256 rung is
+-- a PREFIX of the stack, so nothing the nets consume changes.
 ceilingRung :: Int
 ceilingRung = 256
+
+-- RENDER ceiling: the GIF frame (k = 4 at the canonical 2048 — the
+-- last even cell that keeps a 2×2 sample grid per chroma channel).
+renderRung :: Int
+renderRung = 512
 
 burstFrames, cycleFrames, cycles :: Int
 burstFrames = 64

@@ -17,6 +17,7 @@ FIXTURES = os.path.join(os.path.dirname(__file__), '..', '..', 'fixtures')
 
 CBRT2 = 1.2599210498948731647672106072782
 CBRT4 = 1.5874010519681994747517056392723
+MASK64 = (1 << 64) - 1
 
 
 def owned_cbrt(x):
@@ -59,7 +60,11 @@ def main():
     assert dv['white'] == (1 << dv['adcBits']) - 1 == 4095, '12-bit white'
     assert dv['black'] == 528 and 0 < dv['black'] < dv['white']
     assert dv['cfa'] == 1 and dv['cfaName'] == 'BGGR'
-    assert g['rungs'] == [16, 32, 64, 128, 256] and g['ceilingRung'] == 256
+    assert g['rungs'] == [16, 32, 64, 128, 256, 512]
+    assert g['ceilingRung'] == 256      # MODEL ceiling: gridSide² fractal identity
+    assert g['renderRung'] == 512       # RENDER ceiling: the GIF frame
+    assert g['renderRung'] in g['rungs']
+    assert (g['canonicalSide'] // g['renderRung']) % 2 == 0  # whole-period law at k=4
     assert g['canonicalSide'] == 2048 and g['cycles'] == 16
     assert g['gridSide'] ** 2 == g['ceilingRung']
 
@@ -167,6 +172,228 @@ def main():
                         acc += rgb[3 * ((oy * k + sy) * w + (ox * k + sx)) + ch]
                 out.append(acc * inv)
     assert out == br['out'], 'boxReduce bit-drift'
+
+    # ── camera: DNG matrix composition + NT (the magenta law), BIT-EXACT ──
+    cam = cp['camera']
+
+    def rats(key):
+        xs = cam[key]
+        return [xs[2 * i] / xs[2 * i + 1] for i in range(len(xs) // 2)]
+
+    def inv3(m):
+        det = (m[0] * (m[4] * m[8] - m[5] * m[7])
+               - m[1] * (m[3] * m[8] - m[5] * m[6])
+               + m[2] * (m[3] * m[7] - m[4] * m[6]))
+        iv = 1.0 / det
+        return [(m[4] * m[8] - m[5] * m[7]) * iv, (m[2] * m[7] - m[1] * m[8]) * iv,
+                (m[1] * m[5] - m[2] * m[4]) * iv,
+                (m[5] * m[6] - m[3] * m[8]) * iv, (m[0] * m[8] - m[2] * m[6]) * iv,
+                (m[2] * m[3] - m[0] * m[5]) * iv,
+                (m[3] * m[7] - m[4] * m[6]) * iv, (m[1] * m[6] - m[0] * m[7]) * iv,
+                (m[0] * m[4] - m[1] * m[3]) * iv]
+
+    P = cam['xyzToProphotoD50']
+    cone = cam['bradfordCone']
+    d50 = list(apply3(mats['prophotoToXyzD50'], (1.0, 1.0, 1.0)))
+    assert d50 == cam['d50White'], 'd50White drift'
+
+    cm2 = rats('deviceCM2rat')
+    asn = rats('deviceASNrat')
+    cam_to_xyz = inv3(cm2)
+    assert cam_to_xyz == cam['camToXYZ'], 'camToXYZ bit-drift'
+
+    def bradford_to_d50(w):
+        cw = apply3(cone, w)
+        cd = apply3(cone, d50)
+        diag = [cd[0] / cw[0], 0.0, 0.0, 0.0, cd[1] / cw[1], 0.0, 0.0, 0.0, cd[2] / cw[2]]
+        return mul3(inv3(cone), mul3(diag, cone))
+
+    xw = apply3(cam_to_xyz, asn)
+    m_cm = mul3(P, mul3(bradford_to_d50((xw[0] / xw[1], 1.0, xw[2] / xw[1])), cam_to_xyz))
+    assert m_cm == cam['camToPP_CM'], 'camToPP_CM bit-drift'
+
+    fm = mats['prophotoToXyzD50']            # conforming FM: rows sum to D50 white
+    mr, mg, mb = asn[1] / asn[0], 1.0, asn[1] / asn[2]
+    fm_wb = [fm[3 * i + 0] * mr if j == 0 else fm[3 * i + 1] * mg if j == 1
+             else fm[3 * i + 2] * mb for i in range(3) for j in range(3)]
+    m_fm = mul3(P, fm_wb)
+    assert m_fm == cam['camToPP_FMtest'], 'camToPP_FMtest bit-drift'
+
+    for m, key in ((m_cm, 'neutralPP_CM'), (m_fm, 'neutralPP_FM')):
+        npp = list(apply3(m, asn))
+        assert npp == cam[key], f'{key} bit-drift'
+        assert (max(npp) - min(npp)) / max(npp) < 1e-5, f'NT violated for {key}'
+
+    # ── temporalbayer: cycle statistics (TB laws — THE PIVOT), BIT-EXACT ──
+    tb = json.load(open('temporalbayer_golden.json'))
+    side, rung, seed_g = tb['side'], tb['ceiling'], tb['seed']
+    ev, frames = tb['ev'], tb['mosaics']
+    J, k = len(frames), side // rung
+    nR = float((k // 2) * (k // 2))
+    nG = 2.0 * nR
+    sumE = 0.0
+    for e in ev:
+        sumE += e
+
+    def channel_means(mosaic):
+        R, G, B = [], [], []
+        for cy in range(rung):
+            for cx in range(rung):
+                sr = sg = sb = 0.0
+                for y in range(cy * k, cy * k + k):
+                    for x in range(cx * k, cx * k + k):
+                        v = mosaic[y * side + x]
+                        if y % 2 == 0 and x % 2 == 0:
+                            sr += v
+                        elif y % 2 == 1 and x % 2 == 1:
+                            sb += v
+                        else:
+                            sg += v
+                R.append(sr / nR)
+                G.append(sg / (2 * nR))
+                B.append(sb / nR)
+        return R, G, B
+
+    per_frame = [channel_means(f) for f in frames]
+
+    def wmean(ch, i):
+        s = 0.0
+        for j in range(J):
+            s += ev[j] * per_frame[j][ch][i]
+        return s / sumE
+
+    def resid(ch, mu, i):
+        s = 0.0
+        for j in range(J):
+            dv = per_frame[j][ch][i] - mu
+            s += ev[j] * dv * dv
+        return s / (J - 1)
+
+    nbins = rung * rung
+    mu = [[wmean(c, i) for i in range(nbins)] for c in range(3)]
+    vv = [[resid(c, mu[c][i], i) for i in range(nbins)] for c in range(3)]
+    assert mu[0] == tb['muR'] and mu[1] == tb['muG'] and mu[2] == tb['muB'], \
+        'temporalbayer mu bit-drift'
+
+    ratios = []
+    for i in range(nbins):
+        for c, n in ((0, nR), (1, nG), (2, nR)):
+            m_ = mu[c][i]
+            ratios.append(vv[c][i] / (m_ / n) if m_ > 0 else 0.0)
+    ghat = sorted(ratios)[len(ratios) // 2]
+    assert ghat == tb['ghat'], 'temporalbayer ghat bit-drift'
+
+    def dpart(qs, V, i):
+        s = 0.0
+        for j in range(J):
+            s += ev[j] * qs[j][i]
+        qbar = s / sumE
+        num = 0.0
+        for j in range(J):
+            dv = qs[j][i] - qbar
+            num += ev[j] * dv * dv
+        return num / ((J - 1) * V) if V > 0 else 0.0
+
+    q1 = [[per_frame[j][0][i] - per_frame[j][1][i] for i in range(nbins)] for j in range(J)]
+    q2 = [[per_frame[j][2][i] - per_frame[j][1][i] for i in range(nbins)] for j in range(J)]
+    D = [(dpart(q1, ghat * mu[0][i] / nR + ghat * mu[1][i] / nG, i)
+          + dpart(q2, ghat * mu[2][i] / nR + ghat * mu[1][i] / nG, i)) / 2
+         for i in range(nbins)]
+    assert D == tb['D'], 'temporalbayer D bit-drift'
+
+    f = rung // seed_g
+    sig = []
+    for sy in range(seed_g):
+        for sx in range(seed_g):
+            s = 0.0
+            for dy in range(f):
+                for dx in range(f):
+                    s += D[(sy * f + dy) * rung + sx * f + dx]
+            sig.append(s / (f * f))
+    assert sig == tb['sigmaTime'], 'temporalbayer sigmaTime bit-drift'
+
+    zone = sorted(D[cy * rung + cx] for cy in range(16) for cx in range(16))
+    color = sorted(D[cy * rung + cx] for cy in range(rung) for cx in range(16, rung))
+    zmed, cmed = zone[len(zone) // 2], color[len(color) // 2]
+    assert zmed == tb['medians']['zone'] and cmed == tb['medians']['color'], \
+        'temporalbayer median drift'
+    assert zmed > 100 * cmed and 0.2 < cmed < 5, 'TB3 separation violated'
+
+    # ── mlefuse: inverse-variance bracket fuse (MF laws), BIT-EXACT ───────
+    mf = json.load(open('mlefuse_golden.json'))
+    clip_ = mf['clip']
+    ev_ = mf['ev']
+    profs = [(mf['profiles'][2 * i], mf['profiles'][2 * i + 1]) for i in range(4)]
+    s = mf['lcgSeed']
+    scene = []
+    for _ in range(256):
+        scene.append(((s >> 16) % 4096) / 4096.0)
+        s = (s * 6364136223846793005 + 1442695040888963407) & MASK64
+    assert scene == mf['scene'], 'mlefuse scene bit-drift'
+
+    def fuse_mle(obs):
+        num = den = 0.0
+        for (y, e, S, O) in obs:
+            w = 0.0 if y >= clip_ else e * e / (S * max(y, 0.0) + O)
+            num += w * (y / e)
+            den += w
+        if den > 0:
+            return num / den
+        emin = min(e for (_, e, _, _) in obs)
+        y0, e0 = next((y, e) for (y, e, _, _) in obs if e == emin)
+        return y0 / e0
+
+    fused = [fuse_mle([(e * x, e, S, O) for e, (S, O) in zip(ev_, profs)])
+             for x in scene]
+    assert fused == mf['fused'], 'mlefuse fused bit-drift'
+
+    # ── bincontract: THE BIN-COMMUTATION THEOREM, bitwise on dyadics ──────
+    bc = json.load(open('bincontract_golden.json'))
+    bside, bb = bc['side'], bc['b']
+    s = bc['lcgSeed']
+    mos = []
+    for _ in range(bside * bside):
+        mos.append(((s >> 16) % 4096) / 4096.0)
+        s = (s * 6364136223846793005 + 1442695040888963407) & MASK64
+    binned = []
+    half = bside // bb
+    for Y in range(half):
+        for X in range(half):
+            acc = 0.0
+            for j in range(bb):
+                for i in range(bb):
+                    y = 2 * bb * (Y // 2) + 2 * j + Y % 2
+                    x = 2 * bb * (X // 2) + 2 * i + X % 2
+                    acc += mos[y * bside + x]
+            binned.append(acc / (bb * bb))
+    assert binned == bc['binned'], 'bincontract binned bit-drift'
+
+    def cfa_means(m, side_, k):
+        cells = side_ // k
+        out = []
+        for cy in range(cells):
+            for cx in range(cells):
+                rs = gs = bs2 = 0.0
+                for y in range(cy * k, cy * k + k):
+                    for x in range(cx * k, cx * k + k):
+                        v = m[y * side_ + x]
+                        if y % 2 == 0 and x % 2 == 0:
+                            rs += v
+                        elif y % 2 == 1 and x % 2 == 1:
+                            bs2 += v
+                        else:
+                            gs += v
+                n = (k // 2) * (k // 2)
+                out.append((rs / n, gs / (2 * n), bs2 / n))
+        return out
+    # BC2 realized in f64: bitwise equal on the dyadic fixture.
+    assert cfa_means(binned, half, 2) == cfa_means(mos, bside, 4), \
+        'BIN-COMMUTATION THEOREM violated in f64 on dyadics'
+    dc = bc['deviceContract']
+    assert dc['cropSide'] // dc['b'] == dc['binnedSide']
+    assert dc['binnedSide'] // 2 == dc['inSide']
+    assert dc['modelRungs'] == [r for r in g['rungs'] if r <= dc['cropSide'] // (2 * dc['b'])]
+    assert [r for r in g['rungs'] if r > dc['cropSide'] // (2 * dc['b'])] == [dc['renderRung']]
 
     # ── giftarget: integer index maps + display path ─────────────────────
     gt = json.load(open('giftarget_golden.json'))

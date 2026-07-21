@@ -38,8 +38,14 @@ import Boreal.Exposure (CellRGB (..), Mosaic, cfaBin)
 
 -- ── Rungs available for a given mosaic side ─────────────────────
 
+-- 512 added 2026-07-19 (E1-extension verdict: k=4 box means stay
+-- sub-JND on real scenes, mean ΔE 0.0020/p95 0.0066 vs the HA
+-- reference; k=2 rejected at p95 0.0119 — see
+-- BOREAL-DEBAYER-MATH-RESEARCH.md). 512 is the RENDER ceiling (the
+-- GIF frame); 256 remains the MODEL ceiling (H2/N0/bell domain,
+-- gridSide² — Boreal.Geometry.ceilingRung).
 allRungs :: [Int]
-allRungs = [16, 32, 64, 128, 256]
+allRungs = [16, 32, 64, 128, 256, 512]
 
 rungsFor :: Int -> [Int]
 rungsFor side =

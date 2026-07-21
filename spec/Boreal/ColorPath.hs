@@ -127,6 +127,117 @@ srgbToLms =
 prophotoToLms :: M3
 prophotoToLms = mul3 xyzD65toLms (mul3 bradfordD50toD65 prophotoToXyzD50)
 
+-- ── Camera → ProPhoto: the DNG matrix composition (CQ9/CQ10) ───
+--
+-- THE MAGENTA LAW (NT, normative): whatever tags a DNG carries, the
+-- composed camera→ProPhoto matrix MUST map AsShotNeutral to EQUAL
+-- ProPhoto channels (gray).  This is the illuminant-independent
+-- regression that catches every WB/matrix composition error — the
+-- 2026-07-19 device magenta (neutral → (1.78, 0.92, 1.70)) was a
+-- violation of exactly this law.
+--
+-- Two source shapes (DNG spec):
+--   FM path — ForwardMatrix maps WHITE-BALANCED camera to XYZ(D50):
+--     M = XYZ_TO_PROPHOTO_D50 · FM · diag(g/asn_r, 1, g/asn_b)
+--   CM fallback — ColorMatrix maps XYZ(calib illum) → camera; iPhone
+--   DNGs carry ONLY CM1 (StdA) + CM2 (D65).  Prefer CM2; then:
+--     camToXYZ = inv3 CM
+--     XYZ_w    = camToXYZ · asn, normalized Y = 1  (the scene white)
+--     M        = XYZ_TO_PROPHOTO_D50 · bradfordToD50 XYZ_w · camToXYZ
+--   NO wb diagonal in the CM path: white balance is IMPLICIT — the
+--   inverted CM carries the real neutral to the scene white and the
+--   Bradford adaptation carries that to D50.  Bolting diag(wb) onto
+--   an inverted CM applies white balance twice (the magenta bug).
+--
+-- OP ORDER (normative, bit-exact cross-language): inv3 = cofactor
+-- expansion exactly as written below (invDet = 1/det, then each
+-- entry = cofactor · invDet); mul3/apply3 as above; column scaling
+-- and diagonal construction as written.  Full CCT interpolation
+-- between CM1/CM2 is out of scope (documented simplification: CM2).
+
+-- XYZ (D50) → ProPhoto linear (Lindbloom inverse literals — the
+-- house values, ex color.zig).
+xyzToProphotoD50 :: M3
+xyzToProphotoD50 =
+  [ [ 1.3459434, -0.2556075, -0.0511118]
+  , [-0.5445988,  1.5081673,  0.0205351]
+  , [ 0.0,        0.0,        1.2118128] ]
+
+-- Bradford cone response (the classic CAT literals).
+bradfordCone :: M3
+bradfordCone =
+  [ [ 0.8951,  0.2664, -0.1614]
+  , [-0.7502,  1.7135,  0.0367]
+  , [ 0.0389, -0.0685,  1.0296] ]
+
+-- D50 white, derived from the ONE source of truth: ProPhoto rows
+-- sum to D50 white, so this is prophotoToXyzD50 · (1,1,1).
+d50White :: (Double, Double, Double)
+d50White = apply3 prophotoToXyzD50 (1, 1, 1)
+
+-- 3×3 inverse, cofactor expansion, PINNED op shapes.
+inv3 :: M3 -> M3
+inv3 [[m0, m1, m2], [m3, m4, m5], [m6, m7, m8]] =
+  [ [(m4 * m8 - m5 * m7) * iv, (m2 * m7 - m1 * m8) * iv, (m1 * m5 - m2 * m4) * iv]
+  , [(m5 * m6 - m3 * m8) * iv, (m0 * m8 - m2 * m6) * iv, (m2 * m3 - m0 * m5) * iv]
+  , [(m3 * m7 - m4 * m6) * iv, (m1 * m6 - m0 * m7) * iv, (m0 * m4 - m1 * m3) * iv] ]
+  where det = m0 * (m4 * m8 - m5 * m7) - m1 * (m3 * m8 - m5 * m6)
+                + m2 * (m3 * m7 - m4 * m6)
+        iv  = 1 / det
+inv3 _ = error "inv3: malformed matrix"
+
+-- Bradford adaptation: arbitrary white → D50.
+bradfordToD50 :: (Double, Double, Double) -> M3
+bradfordToD50 w = mul3 (inv3 bradfordCone) (mul3 diag bradfordCone)
+  where (cwX, cwY, cwZ) = apply3 bradfordCone w
+        (cdX, cdY, cdZ) = apply3 bradfordCone d50White
+        diag = [ [cdX / cwX, 0, 0], [0, cdY / cwY, 0], [0, 0, cdZ / cwZ] ]
+
+-- FM path: M = P · FM · diag(green-normalized WB multipliers).
+cameraToProPhotoFM :: M3 -> (Double, Double, Double) -> M3
+cameraToProPhotoFM fm (ar, ag, ab) = mul3 xyzToProphotoD50 fmWB
+  where (mr, mg, mb) = (ag / ar, 1, ag / ab)
+        fmWB = [ [r0 * mr, r1 * mg, r2 * mb] | [r0, r1, r2] <- fm ]
+
+-- CM fallback: implicit WB via the scene white + Bradford to D50.
+cameraToProPhotoCM :: M3 -> (Double, Double, Double) -> M3
+cameraToProPhotoCM cm asn = mul3 xyzToProphotoD50 (mul3 brad camToXYZ)
+  where camToXYZ     = inv3 cm
+        (xw, yw, zw) = apply3 camToXYZ asn
+        brad         = bradfordToD50 (xw / yw, 1, zw / yw)
+
+-- ── Device facts: iPhone 17 Pro color tags (frame_1, 2026-07-19) ─
+--
+-- EXACT SRATIONAL/RATIONAL pairs from the DNG — every language
+-- computes num/den itself so the doubles agree bitwise.  This DNG
+-- carries NO ForwardMatrix (CM fallback is the live path on device).
+
+iphone17CM1R, iphone17CM2R :: [(Integer, Integer)]
+iphone17CM1R =
+  [ (30917, 23785), (-15491, 23931), (-32079, 138332)
+  , (-14161, 31063), (39702, 26231), (-5828, 216193)
+  , (-4343, 108172), (6649, 46096), (38417, 60034) ]
+iphone17CM2R =
+  [ (23439, 24499), (-46959, 123674), (-15473, 119683)
+  , (-66223, 156922), (161308, 123231), (5846, 65367)
+  , (-8383, 84491), (6997, 33292), (20525, 43929) ]
+
+iphone17ASNR :: [(Integer, Integer)]
+iphone17ASNR = [(29791, 70950), (1, 1), (73143, 144911)]
+
+ratToM3 :: [(Integer, Integer)] -> M3
+ratToM3 ps = [ [d a, d b, d c] | [a, b, c] <- chunk3 ps ]
+  where d (n, m) = fromIntegral n / fromIntegral m
+        chunk3 (a : b : c : rest) = [a, b, c] : chunk3 rest
+        chunk3 _ = []
+
+ratToTriple :: [(Integer, Integer)] -> (Double, Double, Double)
+ratToTriple [(a, b), (c, d), (e, f)] =
+  ( fromIntegral a / fromIntegral b
+  , fromIntegral c / fromIntegral d
+  , fromIntegral e / fromIntegral f )
+ratToTriple _ = error "ratToTriple: need 3 pairs"
+
 -- ── OKLab constructors ─────────────────────────────────────────
 
 oklabFromLms :: (Double, Double, Double) -> Lab

@@ -55,6 +55,35 @@ for s in cp["samples"] as! [[String: Any]] {
         || BorealKernels.q16(lab.2) != q[2] { die("q16 drift at \(pp)") }
 }
 
+// ── camera: DNG matrix composition + NT (the magenta law), BIT-EXACT ───────
+do {
+    let cam = cp["camera"] as! [String: Any]
+    func rats(_ key: String) -> [Double] {
+        let xs = doubles(cam[key])
+        return stride(from: 0, to: xs.count, by: 2).map { xs[$0] / xs[$0 + 1] }
+    }
+    let asnA = rats("deviceASNrat")
+    let asn = (asnA[0], asnA[1], asnA[2])
+    guard let mCM = BorealKernels.cameraToProPhotoCM(rats("deviceCM2rat"), asn: asn)
+    else { die("cameraToProPhotoCM returned nil") }
+    for (i, w) in doubles(cam["camToPP_CM"]).enumerated()
+        where w.bitPattern != mCM[i].bitPattern { die("camToPP_CM drift at \(i)") }
+    guard let mFM = BorealKernels.cameraToProPhotoFM(doubles(mats["prophotoToXyzD50"]),
+                                                     asn: asn)
+    else { die("cameraToProPhotoFM returned nil") }
+    for (i, w) in doubles(cam["camToPP_FMtest"]).enumerated()
+        where w.bitPattern != mFM[i].bitPattern { die("camToPP_FMtest drift at \(i)") }
+    for (m, key) in [(mCM, "neutralPP_CM"), (mFM, "neutralPP_FM")] {
+        let n = BorealKernels.apply3d(m, asn)
+        let want = doubles(cam[key])
+        if n.0.bitPattern != want[0].bitPattern || n.1.bitPattern != want[1].bitPattern
+            || n.2.bitPattern != want[2].bitPattern { die("\(key) drift") }
+        let mx = max(n.0, max(n.1, n.2)), mn = min(n.0, min(n.1, n.2))
+        if (mx - mn) / mx >= 1.0e-5 { die("NT violated for \(key)") }
+    }
+    print("  camera: composition parity + NT law OK")
+}
+
 // ── multiscale: encode the fixture mosaic, match all three stacks ──────────
 let ms = loadJSON("\(dir)/multiscale_golden.json")["fixture"] as! [String: Any]
 let side = (ms["side"] as! NSNumber).intValue
@@ -68,6 +97,27 @@ if stacks.b != ints32(ms["bandsB"]) { die("multiscale bandsB drift") }
 for r in BorealKernels.msRungs(side: side) {
     guard BorealKernels.msDecode(stacks.L, mosaicSide: side, rung: r) != nil
     else { die("msDecode failed at rung \(r)") }
+}
+// Per-frame fast path (MS3 corollary): direct seed+ceiling computation must
+// be bit-identical to encode→decode — the residual stack telescopes away.
+do {
+    let rungs = BorealKernels.msRungs(side: side)
+    let seed = rungs.first!, ceilR = rungs.last!
+    guard let fp = BorealKernels.msSeedAndCeiling(mosaic: mosaic, side: side,
+                                                  cfa: 0, camToPP: [], hasColor: false)
+    else { die("msSeedAndCeiling returned nil") }
+    if fp.rung != ceilR { die("msSeedAndCeiling ceiling rung drift") }
+    if fp.seedL != Array(stacks.L[0..<(seed * seed)])
+        || fp.seedA != Array(stacks.a[0..<(seed * seed)])
+        || fp.seedB != Array(stacks.b[0..<(seed * seed)]) {
+        die("msSeedAndCeiling seed drift vs absolute band0")
+    }
+    if fp.ceilL != BorealKernels.msDecode(stacks.L, mosaicSide: side, rung: ceilR)
+        || fp.ceilA != BorealKernels.msDecode(stacks.a, mosaicSide: side, rung: ceilR)
+        || fp.ceilB != BorealKernels.msDecode(stacks.b, mosaicSide: side, rung: ceilR) {
+        die("msSeedAndCeiling ceiling drift vs prefix decode")
+    }
+    print("  multiscale: seed+ceiling fast path parity OK")
 }
 
 // ── giftarget: palette display path + index maps ───────────────────────────
@@ -125,6 +175,10 @@ for c in geo["cropCases"] as! [[String: Any]] {
 let geoRungs = (geo["rungs"] as! [Any]).map { Int(truncating: $0 as! NSNumber) }
 if BorealKernels.msRungs(side: geoCanonical) != geoRungs {
     die("msRungs(\(geoCanonical)) does not reproduce the spec ladder")
+}
+if BorealKernels.msRungs(side: geoCanonical).max()
+    != (geo["renderRung"] as! NSNumber).intValue {
+    die("ladder top does not match the spec renderRung")
 }
 
 // ── ported-kernel checks (fuse / scene / DNG — M3/M4 migration) ────────────
@@ -285,6 +339,137 @@ for (ch, target, pal) in [(0, wTL, wPL), (1, wTA, wPA), (2, wTB, wPB)] {
     let drop = [wGot.dropped.0, wGot.dropped.1, wGot.dropped.2][ch]
     if tSum - eSum != drop { die("DW8 conservation broken on channel \(ch)") }
 }
+
+// TemporalBayer (T1, THE PIVOT): μ̂/ĝ/D/σ_time recomputed from the fixture's
+// 4-frame cycle — bitwise against the golden; TB3 separation re-asserted.
+let tb = loadJSON("\(dir)/temporalbayer_golden.json")
+let tbSide = (tb["side"] as! NSNumber).intValue
+let tbRung = (tb["ceiling"] as! NSNumber).intValue
+let tbSeed = (tb["seed"] as! NSNumber).intValue
+let tbFrames = (tb["mosaics"] as! [Any]).map { doubles($0).map { Float($0) } }
+guard let tbGot = BorealKernels.temporalStats(frames: tbFrames, side: tbSide,
+                                              cfa: UInt32((tb["cfa"] as! NSNumber).intValue),
+                                              exposures: doubles(tb["ev"]),
+                                              rung: tbRung, seed: tbSeed)
+else { die("temporalStats returned nil") }
+for (got, key) in [(tbGot.muR, "muR"), (tbGot.muG, "muG"), (tbGot.muB, "muB"),
+                   (tbGot.d, "D"), (tbGot.sigmaTime, "sigmaTime")] {
+    let want = doubles(tb[key])
+    if got.count != want.count { die("temporalbayer \(key) length drift") }
+    for (i, w) in want.enumerated() where w.bitPattern != got[i].bitPattern {
+        die("temporalbayer \(key) drift at \(i)")
+    }
+}
+if tbGot.gain.bitPattern != (tb["ghat"] as! NSNumber).doubleValue.bitPattern {
+    die("temporalbayer ghat drift")
+}
+do {
+    let zone = (0..<16).flatMap { cy in (0..<16).map { cx in tbGot.d[cy * tbRung + cx] } }.sorted()
+    let color = (0..<tbRung).flatMap { cy in (16..<tbRung).map { cx in tbGot.d[cy * tbRung + cx] } }.sorted()
+    let zmed = zone[zone.count / 2], cmed = color[color.count / 2]
+    if !(zmed > 100 * cmed && cmed > 0.2 && cmed < 5) { die("TB3 separation violated in Swift") }
+}
+print("  temporalbayer: cycle statistics parity + TB3 OK")
+
+// MleFuse (MF laws — D11): the inverse-variance bracket fuse vs the
+// golden, bitwise (scene regenerates from the LCG convention; profiles
+// are the device facts baked in the fixture).
+do {
+    let mf = loadJSON("\(dir)/mlefuse_golden.json")
+    let clip = (mf["clip"] as! NSNumber).doubleValue
+    let ev = doubles(mf["ev"])
+    let pr = doubles(mf["profiles"])
+    var s = UInt64((mf["lcgSeed"] as! NSNumber).intValue)
+    var scene = [Double](repeating: 0, count: 256)
+    for k in 0..<256 {
+        scene[k] = Double((s >> 16) % 4096) / 4096
+        s = s &* 6364136223846793005 &+ 1442695040888963407
+    }
+    let sceneWant = doubles(mf["scene"])
+    for (i, w) in sceneWant.enumerated() where w.bitPattern != scene[i].bitPattern {
+        die("mlefuse scene drift at \(i)")
+    }
+    let fusedWant = doubles(mf["fused"])
+    for (i, x) in scene.enumerated() {
+        let obs = (0..<4).map { t in
+            (y: ev[t] * x, e: ev[t], s: pr[2 * t], o: pr[2 * t + 1])
+        }
+        let got = BorealKernels.fuseSampleMLE(clip: clip, obs: obs)
+        if got.bitPattern != fusedWant[i].bitPattern {
+            die("mlefuse fused drift at \(i)")
+        }
+    }
+    print("  mlefuse: inverse-variance fuse parity OK")
+}
+
+// BinContract (THE BIN-COMMUTATION THEOREM): β_b bitwise vs the golden,
+// then the THEOREM checked live — channel means of the binned mosaic
+// equal channel means of the full mosaic BITWISE (dyadic fixture ⇒
+// every f64 intermediate exact), plus the device ladder split.
+do {
+    let bc = loadJSON("\(dir)/bincontract_golden.json")
+    let bSide = (bc["side"] as! NSNumber).intValue
+    let bB = (bc["b"] as! NSNumber).intValue
+    var s = UInt64((bc["lcgSeed"] as! NSNumber).intValue)
+    var mos = [Float](repeating: 0, count: bSide * bSide)
+    for k in 0..<mos.count {
+        mos[k] = Float((s >> 16) % 4096) / 4096
+        s = s &* 6364136223846793005 &+ 1442695040888963407
+    }
+    guard let binned = BorealKernels.binPhase(mos, side: bSide, b: bB)
+    else { die("binPhase returned nil") }
+    let want = doubles(bc["binned"])
+    for (i, w) in want.enumerated()
+        where Double(binned[i]).bitPattern != w.bitPattern {
+        die("binPhase drift at \(i)")
+    }
+    let full = BorealKernels.tbChannelMeans(mos, side: bSide, rung: 16, cfa: 0)
+    let bin2 = BorealKernels.tbChannelMeans(binned, side: bSide / bB, rung: 16, cfa: 0)
+    for (a, b2) in [(full.r, bin2.r), (full.g, bin2.g), (full.b, bin2.b)] {
+        for (i, v) in a.enumerated() where v.bitPattern != b2[i].bitPattern {
+            die("BIN-COMMUTATION THEOREM violated in f64 at cell \(i)")
+        }
+    }
+    let dc = bc["deviceContract"] as! [String: Any]
+    let modelRungs = (dc["modelRungs"] as! [Any]).map { ($0 as! NSNumber).intValue }
+    if BorealKernels.msRungs(side: 512) != modelRungs {
+        die("binned ladder != model rungs")
+    }
+    if BorealKernels.msRungs(side: 2048).filter({ $0 > 256 })
+        != [(dc["renderRung"] as! NSNumber).intValue] {
+        die("render rung is not the exact binning complement")
+    }
+    print("  bincontract: β_b bitwise + THEOREM (f64) + ladder split OK")
+}
+
+// V1 engine (Swift/Accelerate, the runtime ladder's first tier): the
+// champion V1HW package forward vs the numpy reference — TOLERANCE
+// parity (the learned path's precision class; input regenerates from
+// the LCG convention, homeShare-style).
+let vf = loadJSON("\(dir)/v1h_forward_golden.json")
+let vSide = (vf["inSide"] as! NSNumber).intValue
+guard let vPkg = try? BorealKernels.loadV1HWeights(
+    Data(contentsOf: URL(fileURLWithPath: "\(dir)/v1h_d96.weights.bin")))
+else { die("v1h champion package unreadable") }
+var vIn = [Float](repeating: 0, count: vSide * vSide * 16)
+var vs = UInt64((vf["lcgSeed"] as! NSNumber).intValue)
+for k in 0..<vIn.count {
+    vIn[k] = Float((vs >> 16) % 4096) / 4096
+    vs = vs &* 6364136223846793005 &+ 1442695040888963407
+}
+let vT0 = ContinuousClock.now
+guard let vSeed = BorealKernels.v1hSeedForward(vPkg, input: vIn, inSide: vSide)
+else { die("v1hSeedForward returned nil") }
+let vDt = ContinuousClock.now - vT0
+let vWant = doubles(vf["seedOut"])
+if vSeed.count != vWant.count { die("v1h seed length drift") }
+var vMax = 0.0
+for (i, w) in vWant.enumerated() { vMax = max(vMax, abs(Double(vSeed[i]) - w)) }
+let vTol = (vf["maxAbsTolerance"] as! NSNumber).doubleValue
+if vMax > vTol { die("v1h forward parity: maxAbs \(vMax) > tol \(vTol)") }
+print(String(format: "  v1h: Accelerate engine parity OK (maxAbs %.2e, %.0f ms)",
+             vMax, Double(vDt.components.seconds) * 1000
+                   + Double(vDt.components.attoseconds) / 1e15))
 
 if !BorealKernels.fuseSelfTest() { die("fuse self-test failed") }
 if !BorealKernels.sceneSelfTest() { die("scene self-test failed") }

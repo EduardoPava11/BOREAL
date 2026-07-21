@@ -11,8 +11,8 @@
 #   make build         — Debug build for the simulator (no signing)
 #   make test          — the spec gate (laws, goldens, oracle, Swift
 #                        kernels, trainer parity G-a)
-#   make test-xcode    — xcodebuild test (NOTE: no test target exists
-#                        yet — gap G5 in BOREAL-GIF-ISP-WORKFLOW.md)
+#   make test-xcode    — xcodebuild test (BOREALTests: the spec gate's
+#                        parity legs replayed inside Xcode — G5 closed)
 #   make device        — Release build for generic iOS device
 #   make sim           — alias for `make build`
 #   make clean         — wipe spec harness builds + Xcode DerivedData
@@ -36,7 +36,7 @@ help:
 	@echo "  make setup      verify prereqs and regenerate $(PROJECT)"
 	@echo "  make build      Debug simulator build (no signing)"
 	@echo "  make test       spec gate (laws/goldens/oracle/Swift/trainer G-a) + xcodebuild test"
-	@echo "  make test-xcode xcodebuild test (no test target yet — gap G5)"
+	@echo "  make test-xcode xcodebuild test (BOREALTests kernel parity — G5 closed)"
 	@echo "  make device     Release device build"
 	@echo "  make sim        alias for 'make build'"
 	@echo "  make clean      wipe spec harness builds + Xcode DerivedData"
@@ -69,6 +69,22 @@ test-spec:
 test-xcode:
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) \
 		$(DEST_SIM) -configuration Debug test $(SIGN)
+
+# TF0: the Mac verdict CLI (tools/replay — verify/render/noise/abfuse).
+#   make replay ARGS="verify ~/Downloads/BOREAL-20260720-.../"
+replay:
+	@mkdir -p spec/_build
+	swiftc -O BOREAL/Kernels/*.swift tools/replay/main.swift -o spec/_build/replay
+	spec/_build/replay $(ARGS)
+
+# TF4: everything — the spec gate, the Xcode suite, and (when BUNDLE is
+# given) a field-telemetry replay against a real bundle.
+test-all: test-spec test-xcode
+ifdef BUNDLE
+	$(MAKE) replay ARGS="verify $(BUNDLE)"
+else
+	@echo "test-all: no BUNDLE=<dir> given — field replay skipped"
+endif
 
 clean:
 	rm -rf spec/_build

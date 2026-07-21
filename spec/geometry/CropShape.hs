@@ -39,12 +39,18 @@ lawCanonicalSide =
   where minSide = min sensorW sensorH
 
 -- CS2: the ladder is the full dyadic run from the 16² base to the
---      256² ceiling; every rung divides the crop side with
---      whole-quad alignment (an even photosite span).
+--      RENDER ceiling (512², added 2026-07-19 on the E1-extension
+--      verdict); the MODEL ceiling 256² = gridSide² (the fractal
+--      identity — H2/N0/bell domain) sits inside it as a rung; every
+--      rung divides the crop side with whole-quad alignment (an even
+--      photosite span — the carrier-nulling condition).
 lawDyadicRungs :: Bool
 lawDyadicRungs =
-  rungs == takeWhile (<= ceilingRung) (iterate (* 2) gridSide)
-    && length rungs == 5
+  rungs == takeWhile (<= renderRung) (iterate (* 2) gridSide)
+    && length rungs == 6
+    && last rungs == renderRung
+    && ceilingRung == gridSide * gridSide
+    && ceilingRung `elem` rungs
     && and [ isPow2 r | r <- rungs ]
     && and [ canonicalSide `mod` r == 0 | r <- rungs ]
     && and [ even (canonicalSide `div` r) | r <- rungs ]
@@ -137,7 +143,7 @@ main = do
   putStrLn "══════════════════════════════════════════════════════════"
   checkAll
     [ ("CS1 canonicalSide DERIVED from device mosaic, maximal",  lawCanonicalSide)
-    , ("CS2 rungs {16,32,64,128,256} dyadic, quad-aligned",      lawDyadicRungs)
+    , ("CS2 rungs 16…512 dyadic, quad-aligned; 256 = model ceiling", lawDyadicRungs)
     , ("CS3 cell samples 4096R+8192G+4096B = 128², conserved",   lawSampleAccounting)
     , ("CS4 cycle richness 4·128² = 65536 samples/cell",         lawCycleRichness)
     , ("CS5 burst = 16 cycles × 4; 16² = 256 = ceiling",         lawBurstStructure)

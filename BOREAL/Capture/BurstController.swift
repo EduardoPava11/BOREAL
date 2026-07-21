@@ -57,6 +57,28 @@ final class BurstController {
         let b: [Int32]
     }
 
+    /// The cycle's temporal statistics (TB laws — the pivot): the noise
+    /// meter ĝ, σ_time (D aggregated to the seed grid — the temporal twin
+    /// of σ), and the D decile sketch. Full-resolution D stays on device;
+    /// the seed grid + deciles are the bundle-sized summary.
+    struct TemporalSummary: Sendable {
+        let gain: Double
+        let sigmaTime: [Double]      // seed² (16×16), row-major
+        let dDeciles: [Double]       // 11 points: min, 10%…90%, max
+    }
+
+    /// Per-frame device facts for the bundle ("more precision"): the EXIF
+    /// triple, the calibrated noise model, the maker's display-lift hint,
+    /// and the censoring fractions at both rails (clipHi = y ≥ 0.98,
+    /// subBlack = DN < black — the clamp-bias magnitude, per frame).
+    struct FrameFact: Sendable {
+        let width: Int, height: Int
+        let iso: Float, exposureTime: Float, fNumber: Float
+        let noiseS: Double, noiseO: Double
+        let baselineExposure: Double
+        let clipHiFrac: Double, subBlackFrac: Double
+    }
+
     /// Per-frame L fractal record (N0): the frame's own 16² seed-L —
     /// the 256 options — plus its ceiling-rung L reordered into the
     /// (16×16)×(16×16) patch-major structure (H2: each option's home
@@ -78,11 +100,18 @@ final class BurstController {
         let index: Int
         let ok: Bool
         let note: String
+        let biases: [Float]              // the bracket the cycle was SHOT with
         let bands: Bands?
         let plan: [Float]?
         let actualEV: [Float]
         let frameIndices: [[UInt8]]
         let frameL: [FrameL]
+        let temporal: TemporalSummary?
+        let fusedMLE: Bool               // which fuse ran (MF laws vs classic)
+        let frameFacts: [FrameFact]
+        let ntSpread: Double             // NT self-check: neutral→ProPhoto
+                                         //   relative channel spread (< 1e-5
+                                         //   = the magenta law holding)
     }
 
     enum Phase: Equatable {
@@ -99,6 +128,10 @@ final class BurstController {
     /// cycle, GCT = the first cycle's seed palette — D1 default). Published
     /// after .done when assembly succeeds.
     private(set) var gifURL: URL?
+    /// G6: the burst report bundle (burst.json + frames.bin + fractal.bin +
+    /// the GIF) — the corpus valve and the Mac-side judge's food. Published
+    /// alongside `gifURL`.
+    private(set) var reportURLs: [URL] = []
     /// D1: the burst's ONE global palette — the first completed cycle's
     /// seed. Later cycles' per-frame indexing reads it off the serial chain.
     private var governingPalette: PaletteQ16?
@@ -125,7 +158,10 @@ final class BurstController {
         chainTail = nil
         timedOut = false
         gifURL = nil
+        reportURLs = []
         governingPalette = nil
+        Perf.shared.reset()              // P0: this burst owns the perf record
+        Diag.shared.reset()              // and its own narrative (log.txt)
 
         let savedBiases = camera.biases
         defer { camera.biases = savedBiases }
@@ -153,7 +189,15 @@ final class BurstController {
             phase = .capturing(cycle: i + 1)
             camera.biases = biases
             do {
+                let tCap = ContinuousClock.now
                 let dngs = try await camera.captureBracket()
+                let capMs = Perf.msSince(tCap)
+                Perf.shared.note("captureBracket", ms: capMs)
+                Diag.shared.log("capture", String(format:
+                    "cycle %d: 4 DNGs (%.1f MB) in %.0f ms, biases %@",
+                    i + 1, Double(dngs.reduce(0) { $0 + $1.count }) / 1_048_576.0,
+                    capMs, "\(biases)"))
+                if (i + 1) % 4 == 0 { Perf.shared.sampleThermal("cycle-\(i + 1)") }
                 enqueueReduction(Cycle(index: i, biases: biases, dngs: dngs))
             } catch {
                 dropped += 1
@@ -169,26 +213,46 @@ final class BurstController {
         phase = .draining
         await chainTail?.value
         phase = .done(completed: Self.cycleCount - dropped, dropped: dropped)
+        Perf.shared.sampleThermal("burst-end")
         blog.info("burst: done — \(Self.cycleCount - dropped)/\(Self.cycleCount) cycles, \(self.outcomes.filter(\.ok).count) reduced ok")
 
-        // Assemble the product: one GIF frame per completed cycle, indexed
-        // against the FIRST cycle's seed palette (D1: one global table).
+        // Assemble the product bundle (G6): the GIF (one frame per captured
+        // frame, D1 global table) + burst.json (EV traces, binomial stats,
+        // churn, perf) + frames.bin/fractal.bin (the N0 corpus record).
         let snapshot = outcomes
-        gifURL = await Task.detached(priority: .userInitiated) {
-            Self.assembleGIF(from: snapshot)
+        let bundle = await Task.detached(priority: .userInitiated) {
+            Self.assembleBundle(from: snapshot)
         }.value
+        gifURL = bundle.gif
+        reportURLs = bundle.urls
     }
 
-    /// Burst → GIF89a: the 64-frame contract — every captured frame is its
-    /// own GIF frame (EV-normalized, multi-scale demosaiced, indexed against
-    /// the first cycle's seed) at 5 cs, so the loop replays the burst at
-    /// capture speed.
-    nonisolated private static func assembleGIF(from outcomes: [Outcome]) -> URL? {
+    /// Burst → GIF89a + report bundle (G6). The GIF keeps the 64-frame
+    /// contract — every captured frame is its own GIF frame (EV-normalized,
+    /// multi-scale demosaiced, indexed against the first cycle's seed) at
+    /// 5 cs. Around it, the bundle packages what the Mac side needs:
+    ///
+    ///   burst.json   per-cycle EV traces (shot biases, EXIF-actual ratios,
+    ///                next ETTR plan), per-frame χ²/homeShare, inter-frame
+    ///                churn, seed palette, σ grids, per-frame seed-L, and
+    ///                the P0 perf block (stage ms, GPU ms, thermal,
+    ///                peak footprint)
+    ///   frames.bin   the 64 ceiling-rung GIF index maps, raw u8, GIF frame
+    ///                order — deltas/χ² are recomputable exactly from this
+    ///   fractal.bin  per-frame patch-major L planes (H2), Int32 native-LE
+    ///                — with seedL in the JSON this is the N0 record
+    ///   burst.gif    the product itself
+    ///
+    /// The 64 source DNGs stay OUT (the ~1.6 GB cliff); the single-cycle
+    /// bundle remains the photon-exact replay artifact.
+    nonisolated private static func assembleBundle(from outcomes: [Outcome])
+        -> (gif: URL?, urls: [URL]) {
         let ok = outcomes.filter { $0.ok && $0.bands != nil }.sorted { $0.index < $1.index }
-        guard let first = ok.first?.bands else { return nil }
-        let palRGB = Kernel.oklabQ16ToSRGB8(L: Array(first.L[0..<256]),
-                                            a: Array(first.a[0..<256]),
-                                            b: Array(first.b[0..<256]))
+        guard let first = ok.first?.bands else { return (nil, []) }
+        let palL = BorealKernels.rotateCW(Array(first.L[0..<256]), side: 16)
+        let palA = BorealKernels.rotateCW(Array(first.a[0..<256]), side: 16)
+        let palB = BorealKernels.rotateCW(Array(first.b[0..<256]), side: 16)
+        let palRGB = Kernel.oklabQ16ToSRGB8(L: palL, a: palA, b: palB)
 
         let side = first.side
         let frames = ok.flatMap(\.frameIndices)
@@ -196,15 +260,141 @@ final class BurstController {
               frames.allSatisfy({ $0.count == side * side }),
               let gif = Kernel.gifEncode(frames: frames, side: side,
                                          paletteRGB: palRGB, delayCs: 5)
-        else { return nil }
+        else { return (nil, []) }
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("BOREAL-burst-\(Int(Date().timeIntervalSince1970)).gif")
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(BundleStamp.bundleName("BOREAL-burst"))
         do {
-            try gif.write(to: url)
-            return url
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            var urls: [URL] = []
+
+            let gifURL = dir.appendingPathComponent("burst.gif")
+            try gif.write(to: gifURL)
+
+            // frames.bin — the exact GIF frame payloads; everything derived
+            // from index maps (deltas, χ², homeShare) is recomputable from
+            // this, so burst.json carries summaries, not lists.
+            var framesBin = Data(capacity: frames.count * side * side)
+            for f in frames { framesBin.append(contentsOf: f) }
+            let framesURL = dir.appendingPathComponent("frames.bin")
+            try framesBin.write(to: framesURL)
+
+            // fractal.bin — patch-major L planes (H2), one 65,536×Int32
+            // plane per frame, cycles ascending, frames in capture order.
+            let fractalFrames = ok.flatMap(\.frameL)
+            var fractalURL: URL?
+            if !fractalFrames.isEmpty {
+                var bin = Data(capacity: fractalFrames.count * 65536 * 4)
+                for f in fractalFrames {
+                    f.patchesL.withUnsafeBufferPointer {
+                        bin.append(UnsafeRawBufferPointer($0).bindMemory(to: UInt8.self))
+                    }
+                }
+                let u = dir.appendingPathComponent("fractal.bin")
+                try bin.write(to: u)
+                fractalURL = u
+            }
+
+            // Inter-frame churn across the whole burst (within AND across
+            // cycles) — counts only; frames.bin holds the exact lists.
+            var churn: [Int] = []
+            churn.reserveCapacity(max(0, frames.count - 1))
+            for t in 0..<max(0, frames.count - 1) {
+                churn.append(Kernel.frameDelta(frames[t], frames[t + 1]).pos.count)
+            }
+
+            var json: [String: Any] = [
+                "design": "BOREAL-METAL-PRECISION-WORKFLOW.md P0 (G6 closure); frames indexed against D1's global seed (cycle 0)",
+                "side": side,
+                "mosaicSide": first.mosaicSide,
+                "frameCount": frames.count,
+                "cyclesOK": ok.count,
+                "cyclesTotal": outcomes.count,
+                "palette": [
+                    "q16L": palL.map(Int.init), "q16a": palA.map(Int.init),
+                    "q16b": palB.map(Int.init), "rgb8": palRGB.map(Int.init),
+                ],
+                "files": [
+                    "frames.bin": "u8 index maps, \(frames.count) × \(side)×\(side), GIF frame order (ok cycles ascending, 4 frames per cycle)",
+                    "fractal.bin": fractalFrames.isEmpty
+                        ? "ABSENT (ceiling < 256 — fractal record undefined)"
+                        : "Int32 little-endian patch-major L planes (H2), \(fractalFrames.count) × 65536, same frame order",
+                ],
+                "churn": ["note": "BA5 defection counts between consecutive burst frames (t → t+1); exact lists recomputable from frames.bin",
+                          "counts": churn],
+                "cycles": ok.map { oc -> [String: Any] in
+                    var entry: [String: Any] = [
+                        "index": oc.index,
+                        "note": oc.note,
+                        "fuse": oc.fusedMLE ? "mle" : "classic",
+                        "ntSpread": oc.ntSpread,
+                        "frames": oc.frameFacts.map { ff -> [String: Any] in
+                            ["iso": Double(ff.iso),
+                             "exposureTime": Double(ff.exposureTime),
+                             "fNumber": Double(ff.fNumber),
+                             "noiseS": ff.noiseS, "noiseO": ff.noiseO,
+                             "baselineExposure": ff.baselineExposure,
+                             "clipHiFrac": ff.clipHiFrac,
+                             "subBlackFrac": ff.subBlackFrac]
+                        },
+                        "shotBiases": oc.biases.map { Double($0) },
+                        "actualRatios": oc.actualEV.map { Double($0) },
+                        "nextPlan": (oc.plan ?? []).map { Double($0) },
+                        "seedL": oc.frameL.map { $0.seedL.map(Int.init) },
+                    ]
+                    if let bands = oc.bands {
+                        entry["sigma"] = bands.sigma.map { Double($0) }
+                    }
+                    if let t = oc.temporal {
+                        entry["temporal"] = ["gain": t.gain,
+                                             "sigmaTime": t.sigmaTime,
+                                             "dDeciles": t.dDeciles]
+                    }
+                    return entry
+                },
+                "dropped": outcomes.filter { !$0.ok }.map {
+                    ["index": $0.index, "note": $0.note] as [String: Any]
+                },
+                // The binomial readout per frame — the judge's headline
+                // numbers (chi² balance + H-structure at the ceiling).
+                "binomial": frames.enumerated().map { t, f -> [String: Any] in
+                    var entry: [String: Any] = [
+                        "frame": t,
+                        "chi2": BorealKernels.indexChiSquare(f),
+                    ]
+                    if let hs = BorealKernels.homeShare(f) { entry["homeShare"] = hs }
+                    return entry
+                },
+                "perf": Perf.shared.reportBlock(),
+            ]
+            json["ev"] = ["note": "per-cycle traces live in cycles[]; shotBiases = the bracket sent to AVFoundation, actualRatios = EXIF-derived, nextPlan = raw ETTR solve (pre-clamp)"]
+            for (k, v) in BundleStamp.dict() { json[k] = v }
+
+            let logURL = dir.appendingPathComponent("log.txt")
+            try Diag.shared.drain().write(to: logURL, atomically: true, encoding: .utf8)
+
+            let jsonURL = dir.appendingPathComponent("burst.json")
+            let data = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+            try data.write(to: jsonURL)
+
+            // THE PREVIEW (TF1.1), then the integrity manifest (TF1.4).
+            let previewURL = dir.appendingPathComponent("preview.html")
+            try PreviewHTML.burstPage(json: json, dir: dir)
+                .write(to: previewURL, atomically: true, encoding: .utf8)
+
+            urls = [previewURL, jsonURL, logURL, framesURL]
+            if let f = fractalURL { urls.append(f) }
+            urls.append(gifURL)
+
+            let manifestURL = dir.appendingPathComponent("manifest.json")
+            try JSONSerialization.data(
+                withJSONObject: BundleStamp.manifest(of: urls),
+                options: [.sortedKeys]).write(to: manifestURL)
+            urls.append(manifestURL)
+            return (gifURL, urls)
         } catch {
-            return nil
+            blog.error("burst: bundle write failed: \(error.localizedDescription, privacy: .public)")
+            return (nil, [])
         }
     }
 
@@ -229,7 +419,9 @@ final class BurstController {
             // The governing palette exists once cycle 0 has finished — the
             // chain is serial, so any later cycle sees it here.
             let governing = await MainActor.run { self?.governingPalette }
-            let outcome = Self.reduce(cycle, governing: governing)
+            let outcome = Perf.shared.time("cycleReduce") {
+                Self.reduce(cycle, governing: governing)
+            }
             await MainActor.run { self?.finish(outcome) }
         }
         reductionTasks[cycle.index] = task
@@ -239,9 +431,10 @@ final class BurstController {
     private func finish(_ outcome: Outcome) {
         outcomes.append(outcome)
         if governingPalette == nil, outcome.ok, let bands = outcome.bands {
-            governingPalette = PaletteQ16(L: Array(bands.L[0..<256]),
-                                          a: Array(bands.a[0..<256]),
-                                          b: Array(bands.b[0..<256]))
+            governingPalette = PaletteQ16(
+                L: BorealKernels.rotateCW(Array(bands.L[0..<256]), side: 16),
+                a: BorealKernels.rotateCW(Array(bands.a[0..<256]), side: 16),
+                b: BorealKernels.rotateCW(Array(bands.b[0..<256]), side: 16))
         }
         blog.info("burst: cycle \(outcome.index + 1) reduced ok=\(outcome.ok) \(outcome.note, privacy: .public)")
     }
@@ -252,19 +445,46 @@ final class BurstController {
     nonisolated static func reduce(_ cycle: Cycle,
                                    governing: PaletteQ16? = nil) -> Outcome {
         func fail(_ note: String) -> Outcome {
-            Outcome(index: cycle.index, ok: false, note: note, bands: nil,
+            Outcome(index: cycle.index, ok: false, note: note,
+                    biases: cycle.biases, bands: nil,
                     plan: nil, actualEV: [1, 1, 1, 1], frameIndices: [],
-                    frameL: [])
+                    frameL: [], temporal: nil, fusedMLE: false,
+                    frameFacts: [], ntSpread: 0)
         }
 
         // 1. Decode (pure-Swift DNG kernel; EXIF rides along for fuse).
+        //    The 4 decodes are independent — run them CONCURRENTLY
+        //    (bundle-6 timeline: serial decode was 11.5 s of a 23.2 s
+        //    cycle; the Gantt in the next bundle shows the overlap).
+        //    Distinct output indices → data-race-free (the msComputeRung
+        //    pattern); Diag/Perf are lock-protected. Footprint note: up to
+        //    4 decode working sets overlap — the bundle's footprint chip
+        //    polices the 350 MB law in the field; dial to 2-way if it
+        //    ever trips.
+        guard cycle.dngs.count == 4 else {
+            return fail("expected 4 DNGs, got \(cycle.dngs.count)")
+        }
+        let dngs = cycle.dngs
+        var decoded = [(frame: Kernel.Frame?, status: Int32)](repeating: (nil, 0),
+                                                              count: 4)
+        decoded.withUnsafeMutableBufferPointer { buf in
+            DispatchQueue.concurrentPerform(iterations: 4) { j in
+                buf[j] = Kernel.decodeDNG(dngs[j])
+            }
+        }
         var frames: [Kernel.Frame] = []
         frames.reserveCapacity(4)
-        for (j, dng) in cycle.dngs.enumerated() {
-            let (frame, status) = Kernel.decodeDNG(dng)
-            guard let frame else {
+        for j in 0..<4 {
+            guard let frame = decoded[j].frame else {
+                let status = decoded[j].status
+                Diag.shared.log("decode", "cycle \(cycle.index + 1) frame \(j + 1) FAILED: \(Kernel.statusName(status))")
                 return fail("frame \(j + 1) undecodable: \(Kernel.statusName(status))")
             }
+            Diag.shared.log("decode", String(format:
+                "cycle %d frame %d: %dx%d cfa=%d iso=%.0f et=1/%.0f f=%.2f S=%.4e O=%.3e blExp=%.3f",
+                cycle.index + 1, j + 1, frame.width, frame.height, frame.cfa,
+                frame.iso, frame.exposureTime > 0 ? 1 / frame.exposureTime : 0,
+                frame.fNumber, frame.noiseS, frame.noiseO, frame.baselineExposure))
             frames.append(frame)
         }
         guard frames.count == 4,
@@ -288,6 +508,45 @@ final class BurstController {
         let clips = Kernel.analyzeMosaicClips(cropped[baseIdx])
         let plan = Kernel.solveETTR(clips: clips, wb: ref.wb)
         let actualEV = Kernel.relativeExposures(cropped)
+        Diag.shared.log("ev", "cycle \(cycle.index + 1) actual=\(actualEV) plan=\(plan)")
+
+        // Per-frame device facts ("more precision"): rail censoring
+        // fractions on the CROPPED mosaic + the calibrated metadata.
+        let clipDN = UInt16((Double(ref.black) + 0.98 * (Double(ref.white) - Double(ref.black))).rounded())
+        let blackDN = UInt16(ref.black)
+        let frameFacts: [FrameFact] = cropped.map { f in
+            var hi = 0, lo = 0
+            f.samples.withUnsafeBufferPointer { p in
+                for v in p {
+                    if v >= clipDN { hi += 1 } else if v < blackDN { lo += 1 }
+                }
+            }
+            let n = Double(f.samples.count)
+            return FrameFact(width: f.width, height: f.height,
+                             iso: f.iso, exposureTime: f.exposureTime,
+                             fNumber: f.fNumber,
+                             noiseS: f.noiseS, noiseO: f.noiseO,
+                             baselineExposure: f.baselineExposure,
+                             clipHiFrac: Double(hi) / n,
+                             subBlackFrac: Double(lo) / n)
+        }
+        for (j, ff) in frameFacts.enumerated() {
+            Diag.shared.log("rails", String(format:
+                "cycle %d frame %d: clipHi %.5f subBlack %.5f",
+                cycle.index + 1, j + 1, ff.clipHiFrac, ff.subBlackFrac))
+        }
+
+        // NT self-check (the magenta law, on device, every cycle): the
+        // composed matrix must map AsShotNeutral to gray.
+        var ntSpread = 0.0
+        if ref.hasColor {
+            let n = BorealKernels.apply3d(ref.camToPP.map(Double.init), ref.asn)
+            let mx = max(n.0, max(n.1, n.2)), mn = min(n.0, min(n.1, n.2))
+            if mx > 0 { ntSpread = (mx - mn) / mx }
+            Diag.shared.log("nt", String(format: "cycle %d neutral spread %.3e %@",
+                                         cycle.index + 1, ntSpread,
+                                         ntSpread < 1e-5 ? "OK" : "VIOLATED"))
+        }
 
         // 3-4. Fuse (EV-aware) → the custom ISP: demosaic at EVERY scale.
         // The fused mosaic is scene-linear normalized; msEncode produces
@@ -300,46 +559,110 @@ final class BurstController {
         else { return fail("multi-scale encode failed") }
 
         let ceiling = Kernel.msRungs(side: side).max() ?? 16
+        // σ head rotated to portrait with the render (the stack itself
+        // stays sensor-native — prefix-decoders rotate after decode).
         let bands = Bands(mosaicSide: side, side: ceiling,
                           L: stacks.L, a: stacks.a, b: stacks.b,
-                          sigma: sigmaGrid(mosaicSide: side,
-                                           channels: [stacks.L, stacks.a, stacks.b]))
+                          sigma: BorealKernels.rotateCW(
+                              sigmaGrid(mosaicSide: side,
+                                        channels: [stacks.L, stacks.a, stacks.b]),
+                              side: 16))
 
         // PER-FRAME rendering (the 64-frame GIF contract): each frame
         // EV-normalized by its OWN e_t → multi-scale encode → ceiling-rung
         // decode → indexed against the governing palette (D1: the first
         // cycle's seed; cycle 0 governs itself).
-        let pal = governing ?? PaletteQ16(L: Array(bands.L[0..<256]),
-                                          a: Array(bands.a[0..<256]),
-                                          b: Array(bands.b[0..<256]))
+        // Palette ORDER rotates with the render (same colors): homeShare
+        // pairs spatial patch p with palette entry p, so the seed grid and
+        // the frames must share one orientation — portrait.
+        let pal = governing ?? PaletteQ16(
+            L: BorealKernels.rotateCW(Array(bands.L[0..<256]), side: 16),
+            a: BorealKernels.rotateCW(Array(bands.a[0..<256]), side: 16),
+            b: BorealKernels.rotateCW(Array(bands.b[0..<256]), side: 16))
         var frameIndices: [[UInt8]] = []
         frameIndices.reserveCapacity(4)
         var frameL: [FrameL] = []
         frameL.reserveCapacity(4)
+        var tbMeans: [(r: [Double], g: [Double], b: [Double])] = []
+        tbMeans.reserveCapacity(4)
+        // Render ceiling = the ladder top (512 at canonical 2048 — the GIF
+        // frame); MODEL rung = 256 when present (H2/N0/bell domain — the
+        // fractal record's home, a prefix of the stack).
+        let model = Kernel.msRungs(side: side).contains(256) ? 256 : ceiling
         for (j, frame) in cropped.enumerated() {
             let invE = actualEV[j] > 0 ? 1 / actualEV[j] : 1
             let mosaic = Kernel.normalizeMosaic(frame, invE: invE)
-            guard let fs = Kernel.msEncode(mosaic: mosaic, side: side,
-                                           cfa: ref.cfa, camToPP: ref.camToPP,
-                                           hasColor: ref.hasColor),
-                  let iL = Kernel.msDecode(fs.L, mosaicSide: side, rung: ceiling),
-                  let iA = Kernel.msDecode(fs.a, mosaicSide: side, rung: ceiling),
-                  let iB = Kernel.msDecode(fs.b, mosaicSide: side, rung: ceiling)
+            // TB (the pivot): per-frame render-ceiling channel means, taken
+            // while THIS frame's mosaic is alive — the cycle statistics
+            // need all 4 but never 4 mosaics at once.
+            tbMeans.append(Kernel.tbChannelMeans(mosaic, side: side,
+                                                 rung: ceiling, cfa: ref.cfa))
+            // Fast path: direct {seed, model, ceiling} rungs — each
+            // bit-identical to the full encode→decode (MS3 corollary,
+            // gate-checked), 3 mosaic passes instead of the full ladder.
+            let chromaRung = min(BorealKernels.renderChromaRung, ceiling)
+            guard let planes = Kernel.msDirect(mosaic: mosaic, side: side,
+                                               cfa: ref.cfa, camToPP: ref.camToPP,
+                                               hasColor: ref.hasColor,
+                                               rungs: [16, chromaRung, model, ceiling]),
+                  let ceil = planes[ceiling], let seedP = planes[16],
+                  let modelP = planes[model], let chromaP = planes[chromaRung]
             else { return fail("per-frame render failed at frame \(j + 1)") }
-            frameIndices.append(Kernel.indexMap(L: iL, a: iA, b: iB,
+            // RENDER-CHROMA split (bundle-5 verdict): luma at the ceiling,
+            // a/b from the coarse chroma rung (its own demosaic — larger
+            // cells, exact carrier nulling → screen-moiré false color cut
+            // 3.5×), nearest-upscaled. Then PORTRAIT rotation (2026-07-19):
+            // every product artifact downstream is portrait-consistent.
+            let cL = BorealKernels.rotateCW(ceil.L, side: ceiling)
+            let cA = BorealKernels.rotateCW(
+                BorealKernels.upscalePlane(chromaP.a, from: chromaRung, to: ceiling),
+                side: ceiling)
+            let cB = BorealKernels.rotateCW(
+                BorealKernels.upscalePlane(chromaP.b, from: chromaRung, to: ceiling),
+                side: ceiling)
+            frameIndices.append(Kernel.indexMap(L: cL, a: cA, b: cB,
                                                 palL: pal.L, palA: pal.a, palB: pal.b))
-            // N0 fractal record: this frame's OWN 16² seed-L + its ceiling
-            // L in the H2 patch-major structure (only defined at 256²).
-            if ceiling == 256 {
-                frameL.append(FrameL(seedL: Array(fs.L[0..<256]),
-                                     patchesL: Kernel.patchMajor(iL)))
+            // N0 fractal record: this frame's OWN 16² seed-L + its MODEL-rung
+            // L in the H2 patch-major structure (defined at 256² only) —
+            // rotated with the render so the record matches frames.bin.
+            if model == 256 {
+                frameL.append(FrameL(seedL: BorealKernels.rotateCW(seedP.L, side: 16),
+                                     patchesL: Kernel.patchMajor(
+                                        BorealKernels.rotateCW(modelP.L, side: 256))))
             }
         }
 
+        // TB (the pivot): the cycle's noise meter + alias discriminator +
+        // σ_time, from the per-frame means (gate-verified kernel).
+        var temporal: TemporalSummary?
+        if ceiling % 16 == 0,
+           let ts = Kernel.temporalStats(perFrameMeans: tbMeans,
+                                         cellSide: side / ceiling,
+                                         exposures: actualEV.map(Double.init),
+                                         rung: ceiling, seed: 16) {
+            let sorted = ts.d.sorted()
+            let deciles = (0...10).map {
+                sorted[min(sorted.count - 1, $0 * sorted.count / 10)]
+            }
+            temporal = TemporalSummary(gain: ts.gain,
+                                       sigmaTime: BorealKernels.rotateCW(
+                                           ts.sigmaTime, side: 16),
+                                       dDeciles: deciles)
+        }
+
+        let usedMLE = Kernel.fuseIsMLE(cropped)
+        Diag.shared.log("reduce", String(format:
+            "cycle %d done: S=%d ceiling=%d fuse=%@ ghat=%.4e",
+            cycle.index + 1, side, ceiling, usedMLE ? "mle" : "classic",
+            temporal?.gain ?? 0))
         return Outcome(index: cycle.index, ok: true,
-                       note: "S=\(side) → multi-scale \(ceiling)² stack + 4 frames",
+                       note: "S=\(side) → multi-scale \(ceiling)² stack + 4 frames"
+                           + " [fuse: \(usedMLE ? "mle" : "classic")]",
+                       biases: cycle.biases,
                        bands: bands, plan: plan, actualEV: actualEV,
-                       frameIndices: frameIndices, frameL: frameL)
+                       frameIndices: frameIndices, frameL: frameL,
+                       temporal: temporal, fusedMLE: usedMLE,
+                       frameFacts: frameFacts, ntSpread: ntSpread)
     }
 
     /// Largest 256·2^j ≤ min(width, height), capped at the spec canonical
